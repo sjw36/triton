@@ -174,6 +174,37 @@ A_{3, 2}  A_{3, 3}  A_{3, 0}  A_{3, 1} ...   [phase 1] /
 }
 
 //===----------------------------------------------------------------------===//
+// Stream Layout Encoding (VGPRs to LDS)
+//===----------------------------------------------------------------------===//
+
+def StreamEncodingAttr : TritonGPU_Attr<"StreamEncoding"> {
+  let mnemonic = "stream";
+
+  let description = [{
+An encoding for tensors that are streamed through registers. These are generated
+    in the stream pipeline to break transfer from global to shared memory into
+    2 stages; global to registers, registers to shared memory.
+  }];
+
+  let parameters = (
+    ins
+    // swizzle info
+    "unsigned":$vec, "unsigned":$perPhase, "unsigned":$maxPhase,
+    ArrayRefParameter<"unsigned", "order of axes by the rate of changing">:$order
+  );
+
+  let builders = [
+    AttrBuilder<(ins "SharedEncodingAttr":$sharedEnc), [{
+      return get(context, sharedEnc.getVec(), sharedEnc.getPerPhase(),
+                 sharedEnc.getMaxPhase(), sharedEnc.getOrder());
+    }]>
+  ];
+
+  let extraClassDeclaration = extraBaseClassDeclaration;
+  let hasCustomAssemblyFormat = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // Distributed Layout Encoding
 //===----------------------------------------------------------------------===//
 
