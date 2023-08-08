@@ -661,12 +661,21 @@ unsigned SharedEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
 
 SmallVector<unsigned>
 StreamEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape, Type eltTy) const {
-  llvm_unreachable("getElemsPerThread is not supported for stream layout");
-  return SmallVector<unsigned>();
+  size_t rank = shape.size();
+  auto sizePerThread = getSizePerThread();
+  auto warpsPerCTA = getWarpsPerCTA();
+  auto threadsPerWarp = getThreadsPerWarp();
+  assert(rank == sizePerThread.size() &&
+         "unexpected rank in BlockedEncodingAttr::getElemsPerThread");
+  SmallVector<unsigned> elemsPerThread(rank);
+  for (size_t i = 0; i < rank; ++i) {
+    unsigned t = sizePerThread[i] * threadsPerWarp[i] * warpsPerCTA[i];
+    elemsPerThread[i] = ceil<unsigned>(shape[i], t) * sizePerThread[i];
+  }
+  return elemsPerThread;
 }
 unsigned StreamEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape, Type eltTy) const {
-  llvm_unreachable("getElemsPerThread is not supported for stream layout");
-  return 0;
+  return product<unsigned>(getElemsPerThread(shape, eltTy));
 }
 
 SmallVector<int64_t>
@@ -1065,7 +1074,7 @@ void SharedEncodingAttr::print(AsmPrinter &printer) const {
 }
 
 //===----------------------------------------------------------------------===//
-// Shared encoding
+// Stream encoding
 //===----------------------------------------------------------------------===//
 
 Attribute StreamEncodingAttr::parse(AsmParser &parser, Type type) {
@@ -1078,20 +1087,26 @@ Attribute StreamEncodingAttr::parse(AsmParser &parser, Type type) {
   if (parser.parseGreater().failed())
     return {};
 
-  unsigned vec = 0;
-  unsigned perPhase = 0;
-  unsigned maxPhase = 0;
+  SmallVector<unsigned, 2> sizePerThread;
+  SmallVector<unsigned, 2> threadsPerWarp;
+  SmallVector<unsigned, 2> warpsPerCTA;
   SmallVector<unsigned, 2> order;
 
   for (const NamedAttribute &attr : dict) {
-    if (attr.getName() == "vec") {
-      if (parseUInt(parser, attr, vec, "vec").failed())
+    if (attr.getName() == "sizePerThread") {
+      if (parseIntArrayAttr(parser, attr, sizePerThread,
+                            "number of elements per thread")
+              .failed())
         return {};
-    } else if (attr.getName() == "perPhase") {
-      if (parseUInt(parser, attr, perPhase, "perPhase").failed())
+    } else if (attr.getName() == "threadsPerWarp") {
+      if (parseIntArrayAttr(parser, attr, threadsPerWarp,
+                            "number of threads per warp")
+              .failed())
         return {};
-    } else if (attr.getName() == "maxPhase") {
-      if (parseUInt(parser, attr, maxPhase, "maxPhase").failed())
+    } else if (attr.getName() == "warpsPerCTA") {
+      if (parseIntArrayAttr(parser, attr, warpsPerCTA,
+                            "number of warps per CTA")
+              .failed())
         return {};
     } else if (attr.getName() == "order") {
       if (parseIntArrayAttr(parser, attr, order, "order").failed())
@@ -1103,15 +1118,17 @@ Attribute StreamEncodingAttr::parse(AsmParser &parser, Type type) {
     }
   }
 
-  return parser.getChecked<StreamEncodingAttr>(parser.getContext(), vec,
-                                               perPhase, maxPhase, order);
+  auto ret = parser.getChecked<BlockedEncodingAttr>(
+      parser.getContext(), sizePerThread, threadsPerWarp, warpsPerCTA, order);
+  return ret;
 }
 
 void StreamEncodingAttr::print(AsmPrinter &printer) const {
   printer << "<{"
-          << "vec = " << getVec() << ", perPhase = " << getPerPhase()
-          << ", maxPhase = " << getMaxPhase() << ", order = [" << getOrder()
-          << "]"
+          << "sizePerThread = [" << getSizePerThread() << "]"
+          << ", threadsPerWarp = [" << getThreadsPerWarp() << "]"
+          << ", warpsPerCTA = [" << getWarpsPerCTA() << "]"
+          << ", order = [" << getOrder() << "]"
           << "}>";
 }
 
@@ -1302,14 +1319,17 @@ ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<Type> operandTypes;
 
   // Parse `optional(type(ptr)) -> type(result)`
-  Type ptrType, resultType;
-  if (parser.parseType(resultType))
+  Type ptrType, otherType, resultType;
+  if (parser.parseType(ptrType))
     return failure();
+  operandTypes.push_back(ptrType);
+  if (parser.parseOptionalComma().succeeded()) {
+    if (parser.parseType(otherType))
+      return failure();
+  }
   if (parser.parseOptionalArrow().succeeded()) {
-    ptrType = resultType;
     if (parser.parseType(resultType))
       return failure();
-    operandTypes.push_back(ptrType);
     result.addTypes(resultType);
   } else {
     operandTypes.push_back(getPointerTypeSameShape(resultType));
@@ -1319,11 +1339,11 @@ ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
   // Determine `mask` and `other`
   int hasMask = 0, hasOther = 0;
   if (allOperands.size() >= 2) {
-    operandTypes.push_back(getI1SameShape(resultType));
+    operandTypes.push_back(getI1SameShape(ptrType));
     hasMask = 1;
   }
   if (allOperands.size() >= 3) {
-    operandTypes.push_back(resultType);
+    operandTypes.push_back(otherType);
     hasOther = 1;
   }
 
@@ -1351,11 +1371,12 @@ void LoadOp::print(OpAsmPrinter &printer) {
 
   // `type(ptr) -> type(result)`
   printer << " : ";
-  // `type(ptr)` is optional during parsing, we only print for tensor pointers
-  if (isTensorPointerType(getPtr().getType())) {
-    printer.printStrippedAttrOrType(getPtr().getType());
-    printer << " -> ";
+  printer.printStrippedAttrOrType(getPtr().getType());
+  if (auto other = getOther()) {
+    printer << ", ";
+    printer.printStrippedAttrOrType(other.getType());
   }
+  printer << " -> ";
   printer.printStrippedAttrOrType(getResult().getType());
 }
 
@@ -1372,7 +1393,7 @@ ParseResult StoreOp::parse(OpAsmParser &parser, OperationState &result) {
 
   // Parse `optional(type(ptr)), type(val)`
   // Pointer type
-  Type ptrType, valType;
+  Type ptrType, valType, maskType;
   if (parser.parseType(valType))
     return failure();
   if (parser.parseOptionalComma().succeeded()) {
@@ -1380,6 +1401,10 @@ ParseResult StoreOp::parse(OpAsmParser &parser, OperationState &result) {
     if (parser.parseType(valType))
       return failure();
     operandTypes.push_back(ptrType);
+    if (parser.parseOptionalComma().succeeded()) {
+      if (parser.parseType(maskType))
+        return failure();
+    }
   } else {
     operandTypes.push_back(getPointerTypeSameShape(valType));
   }
@@ -1389,7 +1414,7 @@ ParseResult StoreOp::parse(OpAsmParser &parser, OperationState &result) {
 
   // Determine `mask`
   if (allOperands.size() >= 3)
-    operandTypes.push_back(getI1SameShape(valType));
+    operandTypes.push_back(maskType);
 
   if (parser.resolveOperands(allOperands, operandTypes, allOperandLoc,
                              result.operands))
@@ -1404,12 +1429,13 @@ void StoreOp::print(OpAsmPrinter &printer) {
 
   // `type(ptr), type(value)`
   printer << " : ";
-  // `type(ptr)` is optional during parsing, we only print for tensor pointers
-  if (isTensorPointerType(getPtr().getType())) {
-    printer.printStrippedAttrOrType(getPtr().getType());
-    printer << ", ";
-  }
+  printer.printStrippedAttrOrType(getPtr().getType());
+  printer << ", ";
   printer.printStrippedAttrOrType(getValue().getType());
+  if (auto mask = getMask()) {
+    printer << ", ";
+    printer.printStrippedAttrOrType(mask.getType());
+  }    
 }
 
 //===----------------------------------------------------------------------===//

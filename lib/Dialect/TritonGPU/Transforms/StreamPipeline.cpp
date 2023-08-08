@@ -493,19 +493,17 @@ void LoopPipeliner::createBufferTypes() {
     auto ty = loadOp.getType().cast<RankedTensorType>();
     SmallVector<int64_t> bufferShape(ty.getShape().begin(),
                                      ty.getShape().end());
+    Type eType = ty.getElementType();
+    auto blockedEnc = ty.getEncoding().cast<ttg::BlockedEncodingAttr>();
     // unsigned bitWidth = dotOpEnc.getMMAv2kWidth()
     //                         ? 32 / dotOpEnc.getMMAv2kWidth()
     //                         : ty.getElementType().getIntOrFloatBitWidth();
     auto sharedEnc =
         ttg::SharedEncodingAttr::get(ty.getContext(), dotOpEnc, ty.getShape(),
-                                     ttg::getOrder(ty.getEncoding()),
-                                     ty.getElementType());
-    loadsBufferType[loadOp] =
-        RankedTensorType::get(bufferShape, ty.getElementType(), sharedEnc);
-    auto streamEnc =
-        ttg::StreamEncodingAttr::get(ty.getContext(), sharedEnc);
-    loadsStreamType[loadOp] =
-        RankedTensorType::get(bufferShape, ty.getElementType(), streamEnc);
+                                     ttg::getOrder(ty.getEncoding()), eType);
+    loadsBufferType[loadOp] = RankedTensorType::get(bufferShape, eType, sharedEnc);
+    auto streamEnc = ttg::StreamEncodingAttr::get(ty.getContext(), blockedEnc);
+    loadsStreamType[loadOp] = RankedTensorType::get(bufferShape, eType, streamEnc);
   }
 }
 

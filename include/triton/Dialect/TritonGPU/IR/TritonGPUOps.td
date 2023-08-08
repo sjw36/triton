@@ -278,12 +278,13 @@ def TTG_AllocTensorOp : TTG_Op<"alloc_tensor", [MemoryEffects<[MemAlloc]>,  // A
 // Load/Store Ops
 //
 def TTG_LoadOp : TTG_Op<"load",
-                      [SameLoadStoreOperandsAndResultShape,
+                      [
+    // SameLoadStoreOperandsAndResultShape,
                        AttrSizedOperandSegments,
                        MemoryEffects<[MemRead]>]> {
     let summary = "Load from a tensor of pointers or from a tensor pointer";
 
-    let arguments = (ins TT_Tensor:$ptr, Optional<TT_BoolLike>:$mask,
+    let arguments = (ins TT_PtrTensor:$ptr, Optional<TT_BoolLike>:$mask,
                          Optional<TT_Type>:$other, OptionalAttr<DenseI32ArrayAttr>:$boundaryCheck,
                          OptionalAttr<TT_PaddingOptionAttr>:$padding, TT_CacheModifierAttr:$cache,
                          TT_EvictionPolicyAttr:$evict, BoolAttr:$isVolatile);

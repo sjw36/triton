@@ -174,37 +174,6 @@ A_{3, 2}  A_{3, 3}  A_{3, 0}  A_{3, 1} ...   [phase 1] /
 }
 
 //===----------------------------------------------------------------------===//
-// Stream Layout Encoding (VGPRs to LDS)
-//===----------------------------------------------------------------------===//
-
-def StreamEncodingAttr : TritonGPU_Attr<"StreamEncoding"> {
-  let mnemonic = "stream";
-
-  let description = [{
-An encoding for tensors that are streamed through registers. These are generated
-    in the stream pipeline to break transfer from global to shared memory into
-    2 stages; global to registers, registers to shared memory.
-  }];
-
-  let parameters = (
-    ins
-    // swizzle info
-    "unsigned":$vec, "unsigned":$perPhase, "unsigned":$maxPhase,
-    ArrayRefParameter<"unsigned", "order of axes by the rate of changing">:$order
-  );
-
-  let builders = [
-    AttrBuilder<(ins "SharedEncodingAttr":$sharedEnc), [{
-      return get(context, sharedEnc.getVec(), sharedEnc.getPerPhase(),
-                 sharedEnc.getMaxPhase(), sharedEnc.getOrder());
-    }]>
-  ];
-
-  let extraClassDeclaration = extraBaseClassDeclaration;
-  let hasCustomAssemblyFormat = 1;
-}
-
-//===----------------------------------------------------------------------===//
 // Distributed Layout Encoding
 //===----------------------------------------------------------------------===//
 
@@ -318,6 +287,70 @@ for
 
       return $_get(context, sizePerThread, rankedThreadsPerWarp, warpsPerCTA, order);
 
+    }]>
+  ];
+
+  let extraClassDeclaration = extraBaseClassDeclaration # [{
+    SliceEncodingAttr squeeze(int axis);
+  }];
+
+  let parameters = (
+    ins
+    ArrayRefParameter<"unsigned">:$sizePerThread,
+    ArrayRefParameter<"unsigned">:$threadsPerWarp,
+    ArrayRefParameter<"unsigned">:$warpsPerCTA,
+    // fastest-changing axis first
+    ArrayRefParameter<
+      "unsigned",
+      "order of axes by the rate of changing"
+    >:$order
+    // These attributes can be inferred from the rest
+    // ArrayRefParameter<"unsigned">:$sizePerWarp,
+    // ArrayRefParameter<"unsigned">:$sizePerCTA
+  );
+
+  let hasCustomAssemblyFormat = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// Stream Layout Encoding
+//===----------------------------------------------------------------------===//
+
+def StreamEncodingAttr : DistributedEncoding<"StreamEncoding"> {
+  let mnemonic = "stream";
+
+  let description = [{
+An encoding where each warp owns a contiguous portion of the target tensor. This is typically the kind of data layout
+used to promote memory coalescing in LoadInst and StoreInst.
+It is characterized by three tuples -- thread tile size, warp tile size, and block tile size -- which
+specify the amount of elements owned by each CUDA thread, warp and CTA respectively.
+
+For example, a row-major coalesced layout may partition a 16x16 tensor over 2 warps (i.e. 64 threads) as follows.
+
+[ 0  0  1  1  2  2  3  3  ; 32 32 33 33 34 34 35 35 ]
+[ 0  0  1  1  2  2  3  3  ; 32 32 33 33 34 34 35 35 ]
+[ 4  4  5  5  6  6  7  7  ; 36 36 37 37 38 38 39 39 ]
+[ 4  4  5  5  6  6  7  7  ; 36 36 37 37 38 38 39 39 ]
+...
+[ 28 28 29 29 30 30 31 31 ; 60 60 61 61 62 62 63 63 ]
+[ 28 28 29 29 30 30 31 31 ; 60 60 61 61 62 62 63 63 ]
+
+for
+
+#triton_gpu.stream_layout<{
+  sizePerThread = {2, 2}
+  threadsPerWarp = {8, 4}
+  warpsPerCTA = {1, 2}
+}>
+}];
+
+
+  let builders = [
+    // Duplicates blocked enc in regs
+    AttrBuilder<(ins "BlockedEncodingAttr":$blockedEnc), [{
+      return get(context, blockedEnc.getSizePerThread(),
+                 blockedEnc.getThreadsPerWarp(),
+                 blockedEnc.getWarpsPerCTA(), blockedEnc.getOrder());
     }]>
   ];
 
