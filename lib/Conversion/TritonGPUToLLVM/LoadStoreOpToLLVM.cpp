@@ -447,8 +447,6 @@ struct GPULoadOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
 
-    op.dump();
-    
     // original values
     Value ptr = op.getPtr();
     Value mask = op.getMask();
@@ -582,7 +580,7 @@ struct GPUStoreOpConversion
   LogicalResult
   matchAndRewrite(triton::gpu::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    op.dump();
+    // store from regs to shared
     Value ptr = op.getPtr();
     Value value = op.getValue();
 
@@ -590,17 +588,15 @@ struct GPUStoreOpConversion
     Value llMask = adaptor.getMask();
     Value llValue = adaptor.getValue();
 
-    llPtr.dump();
-
     auto loc = op->getLoc();
     MLIRContext *ctx = rewriter.getContext();
 
-    auto valueTy = value.getType();
+    auto valueTy = ptr.getType();
     Type valueElemTy =
         typeConverter->convertType(getElementTypeOrSelf(valueTy));
 
-    unsigned vec = getVectorSize(ptr);
-    unsigned elemsPerThread = getTotalElemsPerThread(ptr.getType());
+    unsigned vec = 1; // getVectorSize(value);
+    unsigned elemsPerThread = getTotalElemsPerThread(value.getType());
 
     auto ptrElems = getTypeConverter()->unpackLLElements(loc, llPtr, rewriter,
                                                          ptr.getType());

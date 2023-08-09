@@ -606,22 +606,23 @@ void LoopPipeliner::emitPrologue() {
       if (validLoads.contains(op->getResult(0))) {
         auto loadOp = cast<triton::LoadOp>(op);
         // Allocate empty buffer
-        if (stage == 0) {
-          loadsBuffer[loadOp] = allocateEmptyBuffer(loadOp, builder);
-        }
         // load => copy async
         Value newMask =
             getLoadMask(loadOp, lookupOrDefault(loadOp.getMask(), stage),
                         loopCond, builder);
         // load from global -> stream regs
         Value loadVal = builder.create<triton::gpu::LoadOp>(
-              loadOp.getLoc(), loadsStreamType[loadOp],
+                                                            // loadOp.getLoc(), loadsStreamType[loadOp],
+              loadOp.getLoc(), loadOp.getResult().getType(),
               lookupOrDefault(loadOp.getPtr(), stage), newMask,
               lookupOrDefault(loadOp.getOther(), stage),
               loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
               loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
-        newOp = builder.create<triton::gpu::StoreOp>(
-              loadOp.getLoc(), loadsBuffer[loadOp], loadVal, newMask);
+        auto cvt = builder.create<ttg::ConvertLayoutOp>(
+              loadOp.getLoc(), loadsBufferType[loadOp], loadVal);
+        loadsBuffer[loadOp] = cvt;
+        // newOp = builder.create<triton::gpu::StoreOp>(
+        //       loadOp.getLoc(), loadsBuffer[loadOp], loadVal, newMask);
       } else {
         if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
           Value newMask =
@@ -800,7 +801,7 @@ void LoopPipeliner::prefetchNextIteration(scf::ForOp newForOp,
             newMask = nextMapping.lookupOrDefault(mask);
           }
           loadVal = builder.create<triton::gpu::LoadOp>(
-                  loadOp.getLoc(), loadsStreamType[loadOp],
+                  loadOp.getLoc(), loadOp.getResult().getType(),
                   curMapping.lookupOrDefault(loadOp.getPtr()), newMask,
                   curMapping.lookupOrDefault(loadOp.getOther()),
                   loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
@@ -869,15 +870,17 @@ void LoopPipeliner::prefetchNextIteration(scf::ForOp newForOp,
     // Update loading mask
     if (validLoads.contains(op->getResult(0))) {
       auto loadOp = llvm::cast<triton::LoadOp>(op);
-      auto mask = loadOp.getMask();
-      Value newMask = curMask[loadOp];
+      // auto mask = loadOp.getMask();
+      // Value newMask = curMask[loadOp];
       Value loadVal = curLoad[loadOp];
       // then store regs -> shared
       //TODO(SJW): disable cache/evict/vol attrs for stream->shared
       Value storeBuf = newForOp.getRegionIterArgs()[bufferIdx + nextBuffers.size()];
-      builder.create<triton::gpu::StoreOp>(
-            loadOp.getLoc(), storeBuf, loadVal, newMask);
-      nextBuffers.push_back(storeBuf);
+      auto cvt = builder.create<ttg::ConvertLayoutOp>(
+          loadOp.getLoc(), storeBuf.getType(), loadVal);
+      // builder.create<triton::gpu::StoreOp>(
+      //       loadOp.getLoc(), storeBuf, loadVal, newMask);
+      nextBuffers.push_back(cvt);
     }
   }
 
