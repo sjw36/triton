@@ -93,7 +93,7 @@ def optimize_ttgir(mod, num_stages, arch):
     pm.add_tritongpu_optimize_dot_operands_pass()
     pm.add_tritongpu_remove_layout_conversions_pass()
     pm.add_tritongpu_decompose_conversions_pass()
-    pm.add_tritongpu_reorder_instructions_pass()
+    #pm.add_tritongpu_reorder_instructions_pass()
     pm.add_cse_pass()
     pm.add_symbol_dce_pass()
     pm.run(mod)
@@ -114,7 +114,9 @@ def ttgir_to_llir(mod, extern_libs, arch):
     if _is_cuda(arch):
         return translate_triton_gpu_to_llvmir(mod, arch, False)
     else:
-        return translate_triton_gpu_to_llvmir(mod, 0, True)
+        mod.dump()
+        m2 = translate_triton_gpu_to_llvmir(mod, 0, True)
+        return m2
 
 
 # PTX translation
