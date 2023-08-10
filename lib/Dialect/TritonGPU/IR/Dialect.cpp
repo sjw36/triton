@@ -35,8 +35,6 @@ unsigned getTotalElemsPerThread(Attribute layout, ArrayRef<int64_t> shape,
     return mfmaLayout.getTotalElemsPerThread(shape, eltTy);
   } else if (auto sharedLayout = layout.dyn_cast<SharedEncodingAttr>()) {
     return sharedLayout.getTotalElemsPerThread(shape, eltTy);
-  } else if (auto streamLayout = layout.dyn_cast<StreamEncodingAttr>()) {
-    return streamLayout.getTotalElemsPerThread(shape, eltTy);
   } else if (auto dotLayout = layout.dyn_cast<DotOperandEncodingAttr>()) {
     return dotLayout.getTotalElemsPerThread(shape, eltTy);
   } else {
@@ -410,9 +408,6 @@ SmallVector<unsigned> getOrder(Attribute layout) {
   } else if (auto sharedLayout = layout.dyn_cast<SharedEncodingAttr>()) {
     return SmallVector<unsigned>(sharedLayout.getOrder().begin(),
                                  sharedLayout.getOrder().end());
-  } else if (auto streamLayout = layout.dyn_cast<StreamEncodingAttr>()) {
-    return SmallVector<unsigned>(streamLayout.getOrder().begin(),
-                                 streamLayout.getOrder().end());
   } else {
     assert(0 && "Unimplemented usage of getOrder");
     return {};
@@ -429,15 +424,6 @@ bool isSharedEncoding(Value value) {
   if (auto tensorType = type.dyn_cast<RankedTensorType>()) {
     auto encoding = tensorType.getEncoding();
     return encoding && encoding.isa<triton::gpu::SharedEncodingAttr>();
-  }
-  return false;
-}
-
-bool isStreamEncoding(Value value) {
-  auto type = value.getType();
-  if (auto tensorType = type.dyn_cast<RankedTensorType>()) {
-    auto encoding = tensorType.getEncoding();
-    return encoding && encoding.isa<triton::gpu::StreamEncodingAttr>();
   }
   return false;
 }
@@ -657,25 +643,6 @@ unsigned SharedEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape,
                                                     Type eltTy) const {
   llvm_unreachable("getElemsPerThread is not supported for shared layout");
   return 0;
-}
-
-SmallVector<unsigned>
-StreamEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape, Type eltTy) const {
-  size_t rank = shape.size();
-  auto sizePerThread = getSizePerThread();
-  auto warpsPerCTA = getWarpsPerCTA();
-  auto threadsPerWarp = getThreadsPerWarp();
-  assert(rank == sizePerThread.size() &&
-         "unexpected rank in BlockedEncodingAttr::getElemsPerThread");
-  SmallVector<unsigned> elemsPerThread(rank);
-  for (size_t i = 0; i < rank; ++i) {
-    unsigned t = sizePerThread[i] * threadsPerWarp[i] * warpsPerCTA[i];
-    elemsPerThread[i] = ceil<unsigned>(shape[i], t) * sizePerThread[i];
-  }
-  return elemsPerThread;
-}
-unsigned StreamEncodingAttr::getTotalElemsPerThread(ArrayRef<int64_t> shape, Type eltTy) const {
-  return product<unsigned>(getElemsPerThread(shape, eltTy));
 }
 
 SmallVector<int64_t>
@@ -1074,65 +1041,6 @@ void SharedEncodingAttr::print(AsmPrinter &printer) const {
 }
 
 //===----------------------------------------------------------------------===//
-// Stream encoding
-//===----------------------------------------------------------------------===//
-
-Attribute StreamEncodingAttr::parse(AsmParser &parser, Type type) {
-  if (parser.parseLess().failed())
-    return {};
-  // Parse the data as a dictionary
-  DictionaryAttr dict;
-  if (parser.parseAttribute(dict).failed())
-    return {};
-  if (parser.parseGreater().failed())
-    return {};
-
-  SmallVector<unsigned, 2> sizePerThread;
-  SmallVector<unsigned, 2> threadsPerWarp;
-  SmallVector<unsigned, 2> warpsPerCTA;
-  SmallVector<unsigned, 2> order;
-
-  for (const NamedAttribute &attr : dict) {
-    if (attr.getName() == "sizePerThread") {
-      if (parseIntArrayAttr(parser, attr, sizePerThread,
-                            "number of elements per thread")
-              .failed())
-        return {};
-    } else if (attr.getName() == "threadsPerWarp") {
-      if (parseIntArrayAttr(parser, attr, threadsPerWarp,
-                            "number of threads per warp")
-              .failed())
-        return {};
-    } else if (attr.getName() == "warpsPerCTA") {
-      if (parseIntArrayAttr(parser, attr, warpsPerCTA,
-                            "number of warps per CTA")
-              .failed())
-        return {};
-    } else if (attr.getName() == "order") {
-      if (parseIntArrayAttr(parser, attr, order, "order").failed())
-        return {};
-    } else {
-      parser.emitError(parser.getNameLoc(), "unexpected key: ")
-          << attr.getName().strref();
-      return {};
-    }
-  }
-
-  auto ret = parser.getChecked<BlockedEncodingAttr>(
-      parser.getContext(), sizePerThread, threadsPerWarp, warpsPerCTA, order);
-  return ret;
-}
-
-void StreamEncodingAttr::print(AsmPrinter &printer) const {
-  printer << "<{"
-          << "sizePerThread = [" << getSizePerThread() << "]"
-          << ", threadsPerWarp = [" << getThreadsPerWarp() << "]"
-          << ", warpsPerCTA = [" << getWarpsPerCTA() << "]"
-          << ", order = [" << getOrder() << "]"
-          << "}>";
-}
-
-//===----------------------------------------------------------------------===//
 // Mma encoding
 //===----------------------------------------------------------------------===//
 
@@ -1303,142 +1211,6 @@ void InsertSliceAsyncOp::print(OpAsmPrinter &printer) {
 }
 
 //===----------------------------------------------------------------------===//
-//  Load/Store
-//===----------------------------------------------------------------------===//
-
-// Parser & printer for assembly forms
-ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
-  // Parse operands
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> allOperands;
-  SMLoc allOperandLoc = parser.getCurrentLocation();
-  if (parser.parseOperandList(allOperands) ||
-      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
-    return failure();
-
-  // Operand types
-  SmallVector<Type> operandTypes;
-
-  // Parse `optional(type(ptr)) -> type(result)`
-  Type ptrType, otherType, resultType;
-  if (parser.parseType(ptrType))
-    return failure();
-  operandTypes.push_back(ptrType);
-  if (parser.parseOptionalComma().succeeded()) {
-    if (parser.parseType(otherType))
-      return failure();
-  }
-  if (parser.parseOptionalArrow().succeeded()) {
-    if (parser.parseType(resultType))
-      return failure();
-    result.addTypes(resultType);
-  } else {
-    operandTypes.push_back(getPointerTypeSameShape(resultType));
-    result.addTypes(resultType);
-  }
-
-  // Determine `mask` and `other`
-  int hasMask = 0, hasOther = 0;
-  if (allOperands.size() >= 2) {
-    operandTypes.push_back(getI1SameShape(ptrType));
-    hasMask = 1;
-  }
-  if (allOperands.size() >= 3) {
-    operandTypes.push_back(otherType);
-    hasOther = 1;
-  }
-
-  if (parser.resolveOperands(allOperands, operandTypes, allOperandLoc,
-                             result.operands))
-    return failure();
-
-  // Deduce `operandSegmentSizes` from the number of the operands
-  auto operandSegmentSizesAttrName =
-      LoadOp::getOperandSegmentSizesAttrName(result.name);
-  result.addAttribute(
-      operandSegmentSizesAttrName,
-      parser.getBuilder().getDenseI32ArrayAttr({1, hasMask, hasOther}));
-
-  return success();
-}
-
-void LoadOp::print(OpAsmPrinter &printer) {
-  printer << " ";
-  printer << getOperation()->getOperands();
-
-  // `operandSegmentSizes` can be deduced, so we don't print it.
-  printer.printOptionalAttrDict(getOperation()->getAttrs(),
-                                {getOperandSegmentSizesAttrName()});
-
-  // `type(ptr) -> type(result)`
-  printer << " : ";
-  printer.printStrippedAttrOrType(getPtr().getType());
-  if (auto other = getOther()) {
-    printer << ", ";
-    printer.printStrippedAttrOrType(other.getType());
-  }
-  printer << " -> ";
-  printer.printStrippedAttrOrType(getResult().getType());
-}
-
-ParseResult StoreOp::parse(OpAsmParser &parser, OperationState &result) {
-  // Parse operands
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> allOperands;
-  SMLoc allOperandLoc = parser.getCurrentLocation();
-  if (parser.parseOperandList(allOperands) ||
-      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
-    return failure();
-
-  // Operand types
-  SmallVector<Type> operandTypes;
-
-  // Parse `optional(type(ptr)), type(val)`
-  // Pointer type
-  Type ptrType, valType, maskType;
-  if (parser.parseType(valType))
-    return failure();
-  if (parser.parseOptionalComma().succeeded()) {
-    ptrType = valType;
-    if (parser.parseType(valType))
-      return failure();
-    operandTypes.push_back(ptrType);
-    if (parser.parseOptionalComma().succeeded()) {
-      if (parser.parseType(maskType))
-        return failure();
-    }
-  } else {
-    operandTypes.push_back(getPointerTypeSameShape(valType));
-  }
-
-  // Value type
-  operandTypes.push_back(valType);
-
-  // Determine `mask`
-  if (allOperands.size() >= 3)
-    operandTypes.push_back(maskType);
-
-  if (parser.resolveOperands(allOperands, operandTypes, allOperandLoc,
-                             result.operands))
-    return failure();
-  return success();
-}
-
-void StoreOp::print(OpAsmPrinter &printer) {
-  printer << " ";
-  printer << getOperation()->getOperands();
-  printer.printOptionalAttrDict(getOperation()->getAttrs(), /*elidedAttrs=*/{});
-
-  // `type(ptr), type(value)`
-  printer << " : ";
-  printer.printStrippedAttrOrType(getPtr().getType());
-  printer << ", ";
-  printer.printStrippedAttrOrType(getValue().getType());
-  if (auto mask = getMask()) {
-    printer << ", ";
-    printer.printStrippedAttrOrType(mask.getType());
-  }    
-}
-
-//===----------------------------------------------------------------------===//
 // ASM Interface (i.e.: alias)
 //===----------------------------------------------------------------------===//
 
@@ -1452,9 +1224,6 @@ public:
       return AliasResult::FinalAlias;
     } else if (auto sharedAttr = attr.dyn_cast<SharedEncodingAttr>()) {
       os << "shared";
-      return AliasResult::FinalAlias;
-    } else if (auto streamAttr = attr.dyn_cast<StreamEncodingAttr>()) {
-      os << "stream";
       return AliasResult::FinalAlias;
     } else if (auto blockedAttr = attr.dyn_cast<BlockedEncodingAttr>()) {
       os << "blocked";
@@ -1717,130 +1486,3 @@ LogicalResult TritonGPUDialect::verifyOperationAttribute(Operation *op,
   // TODO: fill this.
   return success();
 }
-
-namespace mlir {
-namespace triton {
-namespace gpu {
-
-//-- LoadOp --
-static Type getLoadOpResultType(::mlir::OpBuilder &builder, Type ptrType) {
-  auto ptrTensorType = ptrType.dyn_cast<RankedTensorType>();
-  if (!ptrTensorType)
-    return ptrType.cast<PointerType>().getPointeeType();
-  auto shape = ptrTensorType.getShape();
-  Type elementType =
-      ptrTensorType.getElementType().cast<PointerType>().getPointeeType();
-  return RankedTensorType::get(shape, elementType);
-}
-
-void LoadOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
-                   ::mlir::Value ptr, ::mlir::triton::CacheModifier cache,
-                   ::mlir::triton::EvictionPolicy evict, bool isVolatile) {
-  LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{},
-                /*boundaryCheck=*/{}, /*padding=*/{}, cache, evict, isVolatile);
-}
-
-void LoadOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
-                   ::mlir::Value ptr, ArrayRef<int32_t> boundaryCheck,
-                   std::optional<::mlir::triton::PaddingOption> padding,
-                   ::mlir::triton::CacheModifier cache,
-                   ::mlir::triton::EvictionPolicy evict, bool isVolatile) {
-  LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{}, boundaryCheck,
-                padding, cache, evict, isVolatile);
-}
-
-void LoadOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
-                   ::mlir::Value ptr, ::mlir::Value mask,
-                   ::mlir::triton::CacheModifier cache,
-                   ::mlir::triton::EvictionPolicy evict, bool isVolatile) {
-  LoadOp::build(builder, state, ptr, mask, /*other=*/{}, /*boundaryCheck=*/{},
-                /*padding=*/{}, cache, evict, isVolatile);
-}
-
-void LoadOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
-                   ::mlir::Value ptr, ::mlir::Value mask, ::mlir::Value other,
-                   ::mlir::triton::CacheModifier cache,
-                   ::mlir::triton::EvictionPolicy evict, bool isVolatile) {
-  LoadOp::build(builder, state, ptr, mask, other, /*boundaryCheck=*/{},
-                /*padding=*/{}, cache, evict, isVolatile);
-}
-
-void LoadOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
-                   ::mlir::Value ptr, ::mlir::Value mask, ::mlir::Value other,
-                   std::optional<ArrayRef<int32_t>> boundaryCheck,
-                   std::optional<::mlir::triton::PaddingOption> padding,
-                   ::mlir::triton::CacheModifier cache,
-                   ::mlir::triton::EvictionPolicy evict, bool isVolatile) {
-  // Operands
-  state.addOperands(ptr);
-  if (mask) {
-    state.addOperands(mask);
-    if (other) {
-      state.addOperands(other);
-    }
-  }
-
-  // Attributes
-  state.addAttribute(
-      getOperandSegmentSizesAttrName(state.name),
-      builder.getDenseI32ArrayAttr({1, (mask ? 1 : 0), (other ? 1 : 0)}));
-  if (boundaryCheck.has_value()) {
-    state.addAttribute(getBoundaryCheckAttrName(state.name),
-                       builder.getDenseI32ArrayAttr(boundaryCheck.value()));
-  }
-  if (padding.has_value()) {
-    state.addAttribute(getPaddingAttrName(state.name),
-                       ::mlir::triton::PaddingOptionAttr::get(
-                           builder.getContext(), padding.value()));
-  }
-  state.addAttribute(
-      getCacheAttrName(state.name),
-      ::mlir::triton::CacheModifierAttr::get(builder.getContext(), cache));
-  state.addAttribute(
-      getEvictAttrName(state.name),
-      ::mlir::triton::EvictionPolicyAttr::get(builder.getContext(), evict));
-  state.addAttribute(getIsVolatileAttrName(state.name),
-                     builder.getBoolAttr(isVolatile));
-
-  // Result type
-  Type resultType = getLoadOpResultType(builder, ptr.getType());
-  state.addTypes({resultType});
-}
-
-//-- StoreOp --
-void StoreOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
-                    ::mlir::Value ptr, ::mlir::Value value,
-                    ::mlir::triton::CacheModifier cache,
-                    ::mlir::triton::EvictionPolicy evict) {
-  return StoreOp::build(builder, state, ptr, value, /*mask=*/{},
-                        /*boundaryCheck=*/{}, cache, evict);
-}
-
-void StoreOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
-                    ::mlir::Value ptr, ::mlir::Value value, ::mlir::Value mask,
-                    ::mlir::triton::CacheModifier cache,
-                    ::mlir::triton::EvictionPolicy evict) {
-  return StoreOp::build(builder, state, ptr, value, mask, /*boundaryCheck=*/{},
-                        cache, evict);
-}
-
-void StoreOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
-                    ::mlir::Value ptr, ::mlir::Value value,
-                    ArrayRef<int32_t> boundaryCheck,
-                    ::mlir::triton::CacheModifier cache,
-                    ::mlir::triton::EvictionPolicy evict) {
-  return StoreOp::build(builder, state, ptr, value, /*mask=*/{},
-                        builder.getDenseI32ArrayAttr(boundaryCheck), cache,
-                        evict);
-}
-
-void StoreOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
-                    ::mlir::Value ptr, ::mlir::Value value, ::mlir::Value mask) {
-  return StoreOp::build(builder, state, ptr, value, mask, /*boundaryCheck=*/{},
-                        ::mlir::triton::CacheModifier::NONE,
-                        ::mlir::triton::EvictionPolicy::NORMAL);
-}
-
-} // namespace gpu
-} // namespace triton
-} // namespace mlir

@@ -118,7 +118,6 @@ class LoopPipeliner {
   DenseMap<Value, Value> loadsStream;
   /// load => buffer type (with shared layout after swizzling)
   DenseMap<Value, RankedTensorType> loadsBufferType;
-  DenseMap<Value, RankedTensorType> loadsStreamType;
 
   /// Iterator values
   Value nextIV;
@@ -269,7 +268,7 @@ LogicalResult LoopPipeliner::collectOps(SetVector<Operation *> &ops) {
       //    improvement and may even hurt performance by increasing register
       //    pressure.
       //SJW: if (width >= 32)
-      if (width >= 8)
+      //if (width >= 8)
         ops.insert(loadOp);
     }
 
@@ -502,8 +501,6 @@ void LoopPipeliner::createBufferTypes() {
         ttg::SharedEncodingAttr::get(ty.getContext(), dotOpEnc, ty.getShape(),
                                      ttg::getOrder(ty.getEncoding()), eType);
     loadsBufferType[loadOp] = RankedTensorType::get(bufferShape, eType, sharedEnc);
-    auto streamEnc = ttg::StreamEncodingAttr::get(ty.getContext(), blockedEnc);
-    loadsStreamType[loadOp] = RankedTensorType::get(bufferShape, eType, streamEnc);
   }
 }
 
@@ -611,8 +608,7 @@ void LoopPipeliner::emitPrologue() {
             getLoadMask(loadOp, lookupOrDefault(loadOp.getMask(), stage),
                         loopCond, builder);
         // load from global -> stream regs
-        Value loadVal = builder.create<triton::gpu::LoadOp>(
-                                                            // loadOp.getLoc(), loadsStreamType[loadOp],
+        Value loadVal = builder.create<triton::LoadOp>(
               loadOp.getLoc(), loadOp.getResult().getType(),
               lookupOrDefault(loadOp.getPtr(), stage), newMask,
               lookupOrDefault(loadOp.getOther(), stage),
@@ -621,8 +617,6 @@ void LoopPipeliner::emitPrologue() {
         auto cvt = builder.create<ttg::ConvertLayoutOp>(
               loadOp.getLoc(), loadsBufferType[loadOp], loadVal);
         loadsBuffer[loadOp] = cvt;
-        // newOp = builder.create<triton::gpu::StoreOp>(
-        //       loadOp.getLoc(), loadsBuffer[loadOp], loadVal, newMask);
       } else {
         if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
           Value newMask =
@@ -671,7 +665,6 @@ void LoopPipeliner::emitEpilogue() {
   OpBuilder builder(forOp);
   OpBuilder::InsertionGuard g(builder);
   builder.setInsertionPointAfter(forOp);
-  //SJW: builder.create<ttg::AsyncWaitOp>(forOp.getLoc(), 0);
 }
 
 SmallVector<Value> LoopPipeliner::collectNewLoopArgs() {
@@ -734,11 +727,8 @@ scf::ForOp LoopPipeliner::cloneForOp(ArrayRef<Value> newLoopArgs,
         auto it =
             std::find(validLoads.begin(), validLoads.end(), op.getOperand(0));
         if (it != validLoads.end()) {
-          // 1. group with dot (later)
-          // 2. create 1 barrier (per dot) (later)
           auto loadOp = *it;
           // We replace the use new load use with a convert layout
-          // 3. create extract, and cvt
           auto loadArgIdx = std::distance(validLoads.begin(), it);
           auto cvt = builder.create<ttg::ConvertLayoutOp>(
               result.getLoc(), cvtDstTy, newForOp.getRegionIterArgs()[loadIdx + loadArgIdx]);
@@ -800,7 +790,7 @@ void LoopPipeliner::prefetchNextIteration(scf::ForOp newForOp,
               nextMapping.map(loadOp.getMask(), newMask);
             newMask = nextMapping.lookupOrDefault(mask);
           }
-          loadVal = builder.create<triton::gpu::LoadOp>(
+          loadVal = builder.create<triton::LoadOp>(
                   loadOp.getLoc(), loadOp.getResult().getType(),
                   curMapping.lookupOrDefault(loadOp.getPtr()), newMask,
                   curMapping.lookupOrDefault(loadOp.getOther()),
@@ -870,16 +860,11 @@ void LoopPipeliner::prefetchNextIteration(scf::ForOp newForOp,
     // Update loading mask
     if (validLoads.contains(op->getResult(0))) {
       auto loadOp = llvm::cast<triton::LoadOp>(op);
-      // auto mask = loadOp.getMask();
-      // Value newMask = curMask[loadOp];
       Value loadVal = curLoad[loadOp];
       // then store regs -> shared
-      //TODO(SJW): disable cache/evict/vol attrs for stream->shared
       Value storeBuf = newForOp.getRegionIterArgs()[bufferIdx + nextBuffers.size()];
       auto cvt = builder.create<ttg::ConvertLayoutOp>(
           loadOp.getLoc(), storeBuf.getType(), loadVal);
-      // builder.create<triton::gpu::StoreOp>(
-      //       loadOp.getLoc(), storeBuf, loadVal, newMask);
       nextBuffers.push_back(cvt);
     }
   }
