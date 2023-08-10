@@ -85,7 +85,8 @@ def optimize_ttgir(mod, num_stages, arch):
         pm.add_tritongpu_accelerate_matmul_pass(80)
     pm.add_tritongpu_remove_layout_conversions_pass()
     pm.add_tritongpu_optimize_dot_operands_pass()
-    if is_hip() and gpu_has_mfma():
+    stream = 1
+    if stream and is_hip() and gpu_has_mfma():
         pm.add_tritongpu_stream_pipeline_pass()
     else:
         pm.add_tritongpu_pipeline_pass(num_stages)
@@ -93,7 +94,8 @@ def optimize_ttgir(mod, num_stages, arch):
     pm.add_tritongpu_optimize_dot_operands_pass()
     pm.add_tritongpu_remove_layout_conversions_pass()
     pm.add_tritongpu_decompose_conversions_pass()
-    #pm.add_tritongpu_reorder_instructions_pass()
+    if not stream:
+        pm.add_tritongpu_reorder_instructions_pass()
     pm.add_cse_pass()
     pm.add_symbol_dce_pass()
     pm.run(mod)
@@ -114,9 +116,7 @@ def ttgir_to_llir(mod, extern_libs, arch):
     if _is_cuda(arch):
         return translate_triton_gpu_to_llvmir(mod, arch, False)
     else:
-        mod.dump()
-        m2 = translate_triton_gpu_to_llvmir(mod, 0, True)
-        return m2
+        return translate_triton_gpu_to_llvmir(mod, 0, True)
 
 
 # PTX translation
