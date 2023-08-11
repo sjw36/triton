@@ -88,6 +88,7 @@ def optimize_ttgir(mod, num_stages, arch):
     stream = 1
     if stream and is_hip() and gpu_has_mfma():
         pm.add_tritongpu_stream_pipeline_pass()
+        pm.add_canonicalizer_pass()
     else:
         pm.add_tritongpu_pipeline_pass(num_stages)
     pm.add_tritongpu_prefetch_pass()
