@@ -12,6 +12,19 @@ using ::mlir::triton::gpu::getTotalElemsPerThread;
 using ::mlir::triton::gpu::isaDistributedLayout;
 using ::mlir::triton::gpu::SharedEncodingAttr;
 
+void lds_barrier(ConversionPatternRewriter &rewriter) {
+  auto asmDialectAttr = LLVM::AsmDialectAttr::get(rewriter.getContext(),
+                                                  LLVM::AsmDialect::AD_ATT);
+  const char *asmStr = "s_waitcnt lgkmcnt(0)\ns_barrier";
+  const char *constraints = "";
+  rewriter.create<LLVM::InlineAsmOp>(
+      rewriter.getUnknownLoc(),
+      /*resultTypes=*/TypeRange(), /*operands=*/ValueRange(),
+      /*asm_string=*/asmStr, constraints, /*has_side_effects=*/true,
+      /*is_align_stack=*/false, /*asm_dialect=*/asmDialectAttr,
+      /*operand_attrs=*/ArrayAttr());
+}
+  
 // Forward declarations
 
 namespace SharedToDotOperandMMAv1 {
@@ -480,7 +493,7 @@ private:
       auto multiDimRepId =
           getMultiDimIndex<unsigned>(repId, numReplicates, outOrd);
       if (repId != 0)
-        barrier();
+        lds_barrier(rewriter);
       if (srcLayout.isa<BlockedEncodingAttr>() ||
           srcLayout.isa<SliceEncodingAttr>() ||
 #ifdef USE_ROCM
@@ -500,7 +513,7 @@ private:
         return failure();
       }
 
-      barrier();
+      lds_barrier(rewriter);
       if (dstLayout.isa<BlockedEncodingAttr>() ||
           dstLayout.isa<SliceEncodingAttr>() ||
 #ifdef USE_ROCM

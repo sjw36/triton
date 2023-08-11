@@ -125,7 +125,6 @@ class LoopPipeliner {
   DenseMap<Value, Value> newLoadsMapping;
   /// Yield values
   SmallVector<Value> nextBuffers;
-  SmallVector<Value> extractSlices;
   SmallVector<Value> yieldValues;
 
   /// The number of stages in the pipeline.
@@ -662,9 +661,6 @@ void LoopPipeliner::emitPrologue() {
 
 void LoopPipeliner::emitEpilogue() {
   // If there's any outstanding async copies, we need to wait for them.
-  OpBuilder builder(forOp);
-  OpBuilder::InsertionGuard g(builder);
-  builder.setInsertionPointAfter(forOp);
 }
 
 SmallVector<Value> LoopPipeliner::collectNewLoopArgs() {
@@ -799,10 +795,34 @@ void LoopPipeliner::prefetchNextIteration(scf::ForOp newForOp,
           curLoad[loadOp] = loadVal;
           curMask[loadOp] = newMask;
         }
+      } else if (!immediateOpStages[op].contains(numStages - 2)) {
+        curMapping.map(forOp.getInductionVar(), nextIV);
+        Operation *nextOp;
+        if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
+          auto newMask =
+            getLoadMask(loadOp, curMapping.lookupOrDefault(loadOp.getMask()),
+                        nextLoopCond, builder);
+          nextOp = builder.create<triton::LoadOp>(
+                                                  loadOp.getLoc(), loadOp.getResult().getType(),
+                                                  curMapping.lookupOrDefault(loadOp.getPtr()), newMask,
+                                                  curMapping.lookupOrDefault(loadOp.getOther()),
+                                                  loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
+                                                  loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+          addNamedAttrs(nextOp, op->getDiscardableAttrDictionary());
+          curMapping.map(loadOp.getResult(), nextOp->getResult(0));
+          nextMapping.map(loadOp.getResult(), nextOp->getResult(0));
+        } else {
+          nextOp = builder.clone(*op, curMapping);
+          for (unsigned dstIdx : llvm::seq(unsigned(0), op->getNumResults()))
+            nextMapping.map(op->getResult(dstIdx), nextOp->getResult(dstIdx));
+        }
+
+        for (unsigned dstIdx : llvm::seq(unsigned(0), op->getNumResults()))
+          setValueMappingYield(newForOp, op->getResult(dstIdx),
+                               nextOp->getResult(dstIdx));
       }
     }
   }
-  
 
   // Prefetch load deps
   // If a load-dependent instruction that uses a block argument, we
@@ -823,34 +843,33 @@ void LoopPipeliner::prefetchNextIteration(scf::ForOp newForOp,
   // %arg0 should use the updated %arg0.
   for (Operation *op : orderedDeps) {
     if (!validLoads.contains(op->getResult(0))) {
-      if (immediateOpStages[op].contains(numStages - 2))
+      if (immediateOpStages[op].contains(numStages - 2)) {
         // A post load op that provides values for numStage - 2
         curMapping.map(forOp.getInductionVar(), curIV);
-      else
-        curMapping.map(forOp.getInductionVar(), nextIV);
-      Operation *nextOp;
-      if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
-        auto newMask =
+        Operation *nextOp;
+        if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
+          auto newMask =
             getLoadMask(loadOp, curMapping.lookupOrDefault(loadOp.getMask()),
                         nextLoopCond, builder);
-        nextOp = builder.create<triton::LoadOp>(
-            loadOp.getLoc(), loadOp.getResult().getType(),
-            curMapping.lookupOrDefault(loadOp.getPtr()), newMask,
-            curMapping.lookupOrDefault(loadOp.getOther()),
-            loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
-            loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
-        addNamedAttrs(nextOp, op->getDiscardableAttrDictionary());
-        curMapping.map(loadOp.getResult(), nextOp->getResult(0));
-        nextMapping.map(loadOp.getResult(), nextOp->getResult(0));
-      } else {
-        nextOp = builder.clone(*op, curMapping);
-        for (unsigned dstIdx : llvm::seq(unsigned(0), op->getNumResults()))
-          nextMapping.map(op->getResult(dstIdx), nextOp->getResult(dstIdx));
-      }
+          nextOp = builder.create<triton::LoadOp>(
+                                                  loadOp.getLoc(), loadOp.getResult().getType(),
+                                                  curMapping.lookupOrDefault(loadOp.getPtr()), newMask,
+                                                  curMapping.lookupOrDefault(loadOp.getOther()),
+                                                  loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
+                                                  loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+          addNamedAttrs(nextOp, op->getDiscardableAttrDictionary());
+          curMapping.map(loadOp.getResult(), nextOp->getResult(0));
+          nextMapping.map(loadOp.getResult(), nextOp->getResult(0));
+        } else {
+          nextOp = builder.clone(*op, curMapping);
+          for (unsigned dstIdx : llvm::seq(unsigned(0), op->getNumResults()))
+            nextMapping.map(op->getResult(dstIdx), nextOp->getResult(dstIdx));
+        }
 
-      for (unsigned dstIdx : llvm::seq(unsigned(0), op->getNumResults()))
-        setValueMappingYield(newForOp, op->getResult(dstIdx),
-                             nextOp->getResult(dstIdx));
+        for (unsigned dstIdx : llvm::seq(unsigned(0), op->getNumResults()))
+          setValueMappingYield(newForOp, op->getResult(dstIdx),
+                               nextOp->getResult(dstIdx));
+      }
     }
   }
   
@@ -882,8 +901,6 @@ void LoopPipeliner::finalizeYield(scf::ForOp newForOp, OpBuilder &builder) {
     yieldValues.push_back(mapping.lookup(v));
   for (Value nextBuffer : nextBuffers)
     yieldValues.push_back(nextBuffer);
-  for (Value nextSlice : extractSlices)
-    yieldValues.push_back(nextSlice);
 
   for (size_t i = depArgsBeginIdx; i < ivIndex; ++i) {
     auto arg = newForOp.getRegionIterArgs()[i];
