@@ -504,10 +504,9 @@ struct AtomicCASOpConversion
     // Build the last block: synced load from shared memory, exit.
     rewriter.setInsertionPointToStart(endBlock);
 
-    GCNBuilder BuilderMemfenceLDS;
-    BuilderMemfenceLDS.create<>("s_waitcnt lgkmcnt(0)")->operator()();
-    BuilderMemfenceLDS.launch(rewriter, loc, void_ty(ctx));
-    barrier();
+    // GCNBuilder BuilderMemfenceLDS;
+    // BuilderMemfenceLDS.create<>("s_waitcnt lgkmcnt(0)")->operator()();
+    // BuilderMemfenceLDS.launch(rewriter, loc, void_ty(ctx), true);
     Value ret = load(atomPtr);
     rewriter.replaceOp(op, {ret});
     return success();

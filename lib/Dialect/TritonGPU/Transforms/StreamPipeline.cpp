@@ -534,6 +534,7 @@ void LoopPipeliner::emitEpilogue(DenseMap<Value, Value> &newResults) {
     return;
   OpBuilder builder(forOp);
   builder.setInsertionPointAfter(forOp);
+  // builder.create<ttg::AsyncWaitOp>(validLoads.front().getLoc(), 1);
 
   IRMapping epilogueMap;
   // Map 'for' iteration args to pipelined-for results
@@ -571,6 +572,7 @@ void LoopPipeliner::emitEpilogue(DenseMap<Value, Value> &newResults) {
       }
     }
   }
+  // builder.create<ttg::AsyncWaitOp>(validLoads.front().getLoc(), 0);
 }
 
 SmallVector<Value> LoopPipeliner::collectNewLoopArgs() {
@@ -698,6 +700,8 @@ void LoopPipeliner::prefetchNextBuffer(OpBuilder &builder) {
 
 void LoopPipeliner::cloneCurrentBody(OpBuilder &builder) {
   auto loc = forOp.getLoc();
+  // lds barrier
+  // builder.create<ttg::AsyncWaitOp>(validLoads.front().getLoc(), 1);
   // only add instructions that are not part of the restructuring
   for (Operation &op : forOp.getBody()->without_terminator()) {
     if (!llvm::is_contained(orderedDeps, &op)) {
@@ -738,8 +742,10 @@ void LoopPipeliner::storeNextBuffer(OpBuilder &builder) {
       }
     }
   }
-  
-  // PL loads -> store next to shared
+
+  // LDS Barrier before next store to shared
+  // builder.create<ttg::AsyncWaitOp>(validLoads.front().getLoc(), 0);
+  // loads -> store next to shared
   for (auto loadOp : validLoads) {
     Value loadVal = nextMapping.lookup(loadOp);
     // then store regs -> shared

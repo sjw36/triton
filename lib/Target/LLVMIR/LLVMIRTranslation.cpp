@@ -88,6 +88,7 @@ static void amendLLVMFunc(llvm::Function *func, const NVVMMetadata &metadata,
                       "1, " + std::to_string(threadsPerCTA));
       func->addFnAttr("denormal-fp-math-f32", "preserve-sign");
       func->addFnAttr("amdgpu-unsafe-fp-atomics", "true");
+      func->addFnAttr("amdgpu-waves-per-eu", "2");
     } else {
       llvm::Metadata *mdArgs[] = {
           llvm::ValueAsMetadata::get(func), llvm::MDString::get(ctx, "kernel"),

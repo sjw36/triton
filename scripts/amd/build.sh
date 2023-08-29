@@ -1,9 +1,9 @@
 set -x
 
-cd python
+cd $AMD_PROJECT_HOME/python
 pip uninstall -y triton
 
-bash scripts/amd/clean.sh
+bash $AMD_PROJECT_HOME/scripts/amd/clean.sh
 
 export MLIR_ENABLE_DUMP=1
 export LLVM_IR_ENABLE_DUMP=1

@@ -626,9 +626,9 @@ private:
 
     mod.walk([&](triton::gpu::AsyncWaitOp asyncWaitOp) -> void {
 #ifdef USE_ROCM
-      assert(decomposed &&
-             "AsyncWait is not supported for ROCM and should be removed");
-      asyncWaitOp.erase();
+      // assert(decomposed &&
+      //        "AsyncWait is not supported for ROCM and should be removed");
+      // asyncWaitOp.erase();
 #else
       if (!triton::gpu::AsyncWaitOp::isSupported(computeCapability)) {
         // async wait is supported in Ampere and later

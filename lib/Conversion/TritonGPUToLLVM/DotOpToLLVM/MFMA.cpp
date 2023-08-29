@@ -198,6 +198,16 @@ LogicalResult convertMFMA(triton::DotOp op, triton::DotOp::Adaptor adaptor,
          "DotOp's $c operand should pass the same number of values as $d");
 
   auto loc = op.getLoc();
+  auto *ctx = op.getContext();
+
+  { // Set Priority high
+    uint32_t num = 3;
+    GCNBuilder builderSetPrio;
+    std::string setprio = "s_setprio(" + std::to_string(num) + ")";
+    builderSetPrio.create<>(setprio)->operator()();
+    builderSetPrio.launch(rewriter, loc, void_ty(ctx), true);
+  }
+  
   auto mfmaLayout = op.getResult()
                         .getType()
                         .cast<RankedTensorType>()
@@ -206,7 +216,16 @@ LogicalResult convertMFMA(triton::DotOp op, triton::DotOp::Adaptor adaptor,
 
   DotOpMFMAConversionHelper helper(mfmaLayout, rewriter, typeConverter, loc);
 
-  return helper.convertDot(op, adaptor);
+  LogicalResult res = helper.convertDot(op, adaptor);
+
+  { // Set Priority high
+    GCNBuilder builderSetPrio;
+    std::string setprio = "s_setprio(0)";
+    builderSetPrio.create<>(setprio)->operator()();
+    builderSetPrio.launch(rewriter, loc, void_ty(ctx), true);
+  }
+
+  return res;
 }
 
 #endif // ifdef USE_ROCM

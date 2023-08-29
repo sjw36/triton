@@ -625,6 +625,25 @@ struct AsyncWaitOpConversion
   LogicalResult
   matchAndRewrite(triton::gpu::AsyncWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+#ifdef USE_ROCM
+    auto num = op->getAttrOfType<IntegerAttr>("num").getInt();
+    auto *ctx = rewriter.getContext();
+    auto loc = op.getLoc();
+
+    // // setprio (num)
+    // GCNBuilder builderSetPrio;
+    // std::string setprio = "s_setprio(" + std::to_string(num) + ")";
+    // builderSetPrio.create<>(setprio)->operator()();
+    // builderSetPrio.launch(rewriter, loc, void_ty(ctx), true);
+
+    // GCNBuilder BuilderMemfenceLDS;
+    // BuilderMemfenceLDS.create<>("s_waitcnt lgkmcnt(0)")->operator()();
+    // BuilderMemfenceLDS.launch(rewriter, loc, void_ty(ctx), true);
+    barrier();
+    // GCNBuilder BuilderBarrierLDS;
+    // BuilderBarrierLDS.create<>("s_barrier")->operator()();
+    // BuilderBarrierLDS.launch(rewriter, loc, void_ty(ctx), true);
+#else
     PTXBuilder ptxBuilder;
     auto &asyncWaitOp = *ptxBuilder.create<>("cp.async.wait_group");
     auto num = op->getAttrOfType<IntegerAttr>("num").getInt();
@@ -634,7 +653,7 @@ struct AsyncWaitOpConversion
     auto loc = op.getLoc();
     auto voidTy = void_ty(ctx);
     ptxBuilder.launch(rewriter, loc, voidTy);
-
+#endif
     // Safe to remove the op since it doesn't have any return value.
     rewriter.eraseOp(op);
     return success();
