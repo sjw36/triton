@@ -317,6 +317,9 @@ def compile(src, target=None, options=None):
 
 
 def make_backend(target):
+    print(f"MAKE BACKEND: {target}")
+    for x in backends.values():
+      print(f"BACKEND : {x}")
     actives = [x.compiler for x in backends.values() if x.compiler.supports_target(target)]
     if len(actives) != 1:
         raise RuntimeError(

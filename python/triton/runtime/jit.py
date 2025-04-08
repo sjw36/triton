@@ -565,8 +565,10 @@ class JITFunction(KernelInterface[T]):
         kwargs["debug"] = kwargs.get("debug", self.debug) or os.environ.get("TRITON_DEBUG", "0") == "1"
 
         # parse options
+        print(f"CURRENT driver: {driver.active}")
         device = driver.active.get_current_device()
-        stream = driver.active.get_current_stream(device)
+        print(f"CURRENT DEVICE: {device}")
+        #stream = driver.active.get_current_stream(device)
 
         # Execute pre run hooks with args and kwargs
         for hook in self.pre_run_hooks:
@@ -626,10 +628,10 @@ class JITFunction(KernelInterface[T]):
             grid_1 = grid[1] if grid_size > 1 else 1
             grid_2 = grid[2] if grid_size > 2 else 1
             # launch kernel
-            launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
-            kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata,
-                       launch_metadata, self.CompiledKernel.launch_enter_hook, self.CompiledKernel.launch_exit_hook,
-                       *bound_args.values())
+            #launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
+            #kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata,
+            #           launch_metadata, self.CompiledKernel.launch_enter_hook, self.CompiledKernel.launch_exit_hook,
+            #           *bound_args.values())
         return kernel
 
     def repr(self, _):

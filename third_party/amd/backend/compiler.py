@@ -89,7 +89,7 @@ class HIPBackend(BaseBackend):
 
     @staticmethod
     def supports_target(target: GPUTarget):
-        return target.backend == 'hip'
+        return target.backend == 'cpu'
 
     def __init__(self, target: GPUTarget) -> None:
         super().__init__(target)
@@ -392,6 +392,7 @@ class HIPBackend(BaseBackend):
             target_features = '+xnack'
         hsaco = amd.assemble_amdgcn(src, options.arch, target_features)
 
+        return hsaco
         rocm_path = HIPBackend.path_to_rocm_lld()
         with tempfile.NamedTemporaryFile() as tmp_out:
             with tempfile.NamedTemporaryFile() as tmp_in:
@@ -411,5 +412,5 @@ class HIPBackend(BaseBackend):
 
     @functools.lru_cache()
     def hash(self):
-        version = subprocess.check_output([HIPBackend.path_to_rocm_lld(), "--version"], encoding='utf-8')
+        version = 'foo' # subprocess.check_output([HIPBackend.path_to_rocm_lld(), "--version"], encoding='utf-8')
         return f'{version}-{self.target}'

@@ -105,7 +105,7 @@ def _get_path_to_hip_runtime_dylib():
             paths.append(f)
 
     # Afterwards try to search the loader dynamic library resolution paths.
-    libs = subprocess.check_output(["/sbin/ldconfig", "-p"]).decode()
+    libs = "" # subprocess.check_output(["/sbin/ldconfig", "-p"]).decode()
     # each line looks like the following:
     # libamdhip64.so.6 (libc6,x86-64) => /opt/rocm-6.0.2/lib/libamdhip64.so.6
     # libamdhip64.so (libc6,x86-64) => /opt/rocm-6.0.2/lib/libamdhip64.so
@@ -151,6 +151,7 @@ class HIPUtils(object):
         return cls.instance
 
     def __init__(self):
+        return
         libhip_path = _get_path_to_hip_runtime_dylib()
         src = Path(os.path.join(dirname, "driver.c")).read_text()
         # Just do a simple search and replace here instead of templates or format strings.
@@ -160,6 +161,12 @@ class HIPUtils(object):
         mod = compile_module_from_src(src, "hip_utils")
         self.load_binary = mod.load_binary
         self.get_device_properties = mod.get_device_properties
+
+    def load_binary(self):
+        return
+
+    def get_device_properties(self):
+        return
 
 
 # -------------------- Launcher ----------------------------
@@ -503,16 +510,21 @@ class HIPLauncher(object):
 class HIPDriver(GPUDriver):
 
     def __init__(self):
+        import torch
         super().__init__()
         self.utils = HIPUtils()
         self.launcher_cls = HIPLauncher
+        self.get_current_device = torch.cpu.current_device
+        self.set_current_device = torch.cpu.set_device
+
 
     def get_device_interface(self):
         import torch
-        return torch.cuda
+        return torch.cpu
 
     @staticmethod
     def is_active():
+        return True
         try:
             import torch
             return torch.version.hip is not None
@@ -520,16 +532,19 @@ class HIPDriver(GPUDriver):
             return False
 
     def get_current_target(self):
-        device = self.get_current_device()
-        device_properties = self.utils.get_device_properties(device)
-        arch = device_properties['arch']
-        warp_size = device_properties['warpSize']
-        return GPUTarget("hip", arch.split(':')[0], warp_size)
+        #device = self.get_current_device()
+        #device_properties = self.utils.get_device_properties(device)
+        #arch = device_properties['arch']
+        #warp_size = device_properties['warpSize']
+        arch = "gfx950"
+        warp_size = 64
+        return GPUTarget("cpu", arch.split(':')[0], warp_size)
 
     def get_active_torch_device(self):
         import torch
         # when using hip devices, the device string in pytorch is "cuda"
-        return torch.device("cuda", self.get_current_device())
+        #return torch.device("cuda", self.get_current_device())
+        return torch.device('cpu')
 
     def get_benchmarker(self):
         from triton.testing import do_bench
@@ -540,7 +555,7 @@ class HIPDriver(GPUDriver):
 
         # It's the same as the Nvidia backend.
         cache_size = 256 * 1024 * 1024
-        return torch.empty(int(cache_size // 4), dtype=torch.int, device='cuda')
+        return torch.empty(int(cache_size // 4), dtype=torch.int, device='cpu')
 
     def clear_cache(self, cache):
         cache.zero_()

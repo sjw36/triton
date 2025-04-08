@@ -197,6 +197,7 @@ static struct PyModuleDef ModuleDef = {PyModuleDef_HEAD_INIT, "hip_utils",
                                        ModuleMethods};
 
 PyMODINIT_FUNC PyInit_hip_utils(void) {
+  return NULL;
   if (!initSymbolTable()) {
     return NULL;
   }
