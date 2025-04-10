@@ -3,6 +3,20 @@
 
 include "mlir/Pass/PassBase.td"
 
+def TritonAMDGPULoopBisect : Pass<"tritonamdgpu-loop-bisect", "mlir::ModuleOp"> {
+  let summary = "Loop bisect";
+
+  let description = [{
+    Bisect a loop when beneficial.
+  }];
+
+  let constructor = "mlir::createTritonAMDGPULoopBisect()";
+
+  let dependentDialects = ["mlir::triton::amdgpu::TritonAMDGPUDialect"];
+
+  let options = [
+  ];
+}
 def TritonAMDGPUStreamPipeline : Pass<"tritonamdgpu-stream-pipeline", "mlir::ModuleOp"> {
   let summary = "pipeline";
 

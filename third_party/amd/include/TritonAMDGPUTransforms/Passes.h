@@ -13,6 +13,8 @@ createTritonAMDGPUStreamPipelinePass(int numStages = 2, int globalPrefetch = 0,
                                      int localPrefetch = 0,
                                      bool useAsyncCopy = false);
 
+std::unique_ptr<Pass> createTritonAMDGPULoopBisect();
+
 std::unique_ptr<Pass>
 createTritonAMDGPUAccelerateMatmulPass(std::string archGenName = std::string(),
                                        int matrixInstructionSize = 0,
