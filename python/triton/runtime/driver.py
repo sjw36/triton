@@ -3,7 +3,10 @@ from ..backends import DriverBase
 
 
 def _create_driver():
+    for x in backends:
+      print(f"BACKEND: {x}")
     actives = [x.driver for x in backends.values() if x.driver.is_active()]
+    print(f"DRIVERS: {actives[0]()}")
     if len(actives) != 1:
         raise RuntimeError(f"{len(actives)} active drivers ({actives}). There should only be one.")
     return actives[0]()
