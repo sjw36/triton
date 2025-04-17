@@ -10,7 +10,7 @@ def TritonAMDGPULoopBisect : Pass<"tritonamdgpu-loop-bisect", "mlir::ModuleOp"> 
     Bisect a loop when beneficial.
   }];
 
-  let constructor = "mlir::createTritonAMDGPULoopBisect()";
+  let constructor = "mlir::createTritonAMDGPULoopBisectPass()";
 
   let dependentDialects = ["mlir::triton::amdgpu::TritonAMDGPUDialect"];
 

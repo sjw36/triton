@@ -1,6 +1,7 @@
 #include "TritonAMDGPUTransforms/Passes.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "third_party/amd/include/Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "third_party/amd/lib/TritonAMDGPUToLLVM/SchedInstructions.h"
 #include "triton/Analysis/AxisInfo.h"
@@ -87,13 +88,16 @@ public:
       : forOp(_forOp) {
   }
 
-  LogicalResult bisect() { return failure(); }
+  LogicalResult bisect();
 
 private:
 
+  LogicalResult getMidpoint(OpOperand &opr);
 private:
   // Data members
   scf::ForOp forOp;
+
+  DenseMap<Operation *, Value> op2MidPoint;
 
   // Mapping and indirection level for each `tt.load` to its use.
   SmallVector<std::tuple<Operation *, int, Operation *>> loadOpToIndLevelAndUse;
@@ -102,6 +106,94 @@ private:
   SmallVector<Value> sharedMemAllocs;
 };
 
+
+LogicalResult LoopBisect::getMidpoint(OpOperand &opr) {
+  if (auto cmp = dyn_cast<arith::CmpIOp>(opr.getOwner())) {
+    LDBG("CMP: " << cmp);
+    auto pred = cmp.getPredicate();
+    bool isEq = false;
+    switch (pred) {
+      case arith::CmpIPredicate::sge:
+      case arith::CmpIPredicate::sle:
+        isEq = true;
+      case arith::CmpIPredicate::sgt:
+      case arith::CmpIPredicate::slt:
+        break;
+      default:
+        // Un-supported cmpi
+        return failure();
+    }
+
+    // other most be loop invariant
+    Value midp = cmp.getOperand(opr.getOperandNumber() ^ 1);
+    if (auto *defOther = midp.getDefiningOp()) {
+      if (forOp->isAncestor(defOther))
+        return failure();
+    } else
+      assert(0);
+
+    if (isEq) {
+      bool isGt = pred == arith::CmpIPredicate::sge || pred == arith::CmpIPredicate::sgt;
+      if (opr.getOperandNumber() == 1)
+        isGt = !isGt;
+      // return i >= c ? c - 1 : c + 1
+      auto loc = cmp.getLoc();
+      OpBuilder b(forOp);
+      b.setInsertionPoint(forOp);
+      auto incr = b.create<arith::ConstantIntOp>(loc, isGt ? -1 : 1, 32);
+      midp = b.create<arith::AddIOp>(loc, midp, incr);
+    }
+    op2MidPoint[cmp] = midp;
+    return success();
+  }
+  return failure();
+}
+
+LogicalResult LoopBisect::bisect() {
+  auto lo = forOp.getLowerBound();
+  auto hi = forOp.getUpperBound();
+  auto step = forOp.getConstantStep();
+
+  //LDBG("Loop: " << forOp);
+  if (!step) {
+    LDBG("Non-constant step");
+    return failure();
+  }
+
+  // get midpoint
+  auto iter = forOp.getInductionVar();
+  for (OpOperand &use : iter.getUses()) {
+    auto res = getMidpoint(use);
+  }
+
+  // TODO: for multiple points, determine if they can be sorted, or just pick one
+  if (op2MidPoint.size() == 1) {
+    auto [cmp, midp] = *op2MidPoint.begin();
+
+    /// TODO(sjw): update upstream peelForLoop
+    /// make midp floored with step
+    /// bisect loop (lo .. midp)
+    /// bisect loop (midp .. hi)
+    IRMapping mapping;
+    OpBuilder b(forOp);
+    b.setInsertionPointAfter(forOp);
+    scf::ForOp newForOp = cast<scf::ForOp>(b.clone(*forOp, mapping));
+    newForOp.setLowerBound(midp);
+    forOp.replaceAllUsesWith(newForOp.getResults());
+    newForOp.getInitArgsMutable().assign(forOp->getResults());
+    forOp.setUpperBound(midp);
+
+    // replace cmp with constant True/False for each loop
+    b.setInsertionPoint(forOp);
+    auto loc = cmp->getLoc();
+    cmp->replaceAllUsesWith(b.create<arith::ConstantIntOp>(loc, 0, 1));
+    auto *newCmp = mapping.lookup(cmp);
+    newCmp->replaceAllUsesWith(b.create<arith::ConstantIntOp>(loc, 1, 1));
+  }
+
+  return success();
+}
+
 struct LoopBisectPass : public TritonAMDGPULoopBisectBase<LoopBisectPass> {
   LoopBisectPass() = default;
 
@@ -109,7 +201,7 @@ struct LoopBisectPass : public TritonAMDGPULoopBisectBase<LoopBisectPass> {
     ModuleOp moduleOp = getOperation();
 
     SmallVector<scf::ForOp> loops;
-    getOperation()->walk([&](scf::ForOp forOp) {
+    getOperation()->walk<WalkOrder::PostOrder>([&](scf::ForOp forOp) {
       loops.push_back(forOp);
     });
 
@@ -126,6 +218,6 @@ private:
 } // namespace
 
 std::unique_ptr<Pass>
-mlir::createTritonAMDGPULoopBisect() {
+mlir::createTritonAMDGPULoopBisectPass() {
   return std::make_unique<LoopBisectPass>();
 }

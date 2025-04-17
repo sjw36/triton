@@ -78,6 +78,8 @@ void init_triton_amd_passes_ttgpuir(py::module &&m) {
                      mlir::createTritonAMDGPUFoldTrueCmpIPass);
   ADD_PASS_WRAPPER_1("add_block_pingpong",
                      mlir::createTritonAMDGPUBlockPingpongPass, int32_t);
+  ADD_PASS_WRAPPER_0("add_loop_bisect",
+                     mlir::createTritonAMDGPULoopBisectPass);
   ADD_PASS_WRAPPER_4("add_stream_pipeline",
                      mlir::createTritonAMDGPUStreamPipelinePass, int, int, int,
                      bool);
