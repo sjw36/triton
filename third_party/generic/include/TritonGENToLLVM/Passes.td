@@ -4,7 +4,7 @@
 include "mlir/Pass/PassBase.td"
 
 def FuncOpToLLVM : Pass<"triton-gen-func-op-to-llvm", "mlir::ModuleOp"> {
-    let summary = "Convert FuncOp to LLVM for CPU.";
+    let summary = "Convert FuncOp to LLVM for GEN.";
     let description = [{}];
     let constructor = "mlir::triton::gen::createFuncOpToLLVMPass()";
 
@@ -16,7 +16,7 @@ def FuncOpToLLVM : Pass<"triton-gen-func-op-to-llvm", "mlir::ModuleOp"> {
 }
 
 def MemoryOpToLLVM : Pass<"triton-gen-memory-op-to-llvm", "mlir::ModuleOp"> {
-    let summary = "Convert Triton memory operations to LLVM for CPU.";
+    let summary = "Convert Triton memory operations to LLVM for GEN.";
     let description = [{}];
     let constructor = "mlir::triton::gen::createMemoryOpToLLVMPass()";
 
@@ -29,7 +29,7 @@ def MemoryOpToLLVM : Pass<"triton-gen-memory-op-to-llvm", "mlir::ModuleOp"> {
 }
 
 def GetProgramIdOpToLLVM : Pass<"triton-gen-get-program-id-op-to-llvm", "mlir::ModuleOp"> {
-    let summary = "Convert Triton GetProgramId to LLVM for CPU.";
+    let summary = "Convert Triton GetProgramId to LLVM for GEN.";
     let description = [{}];
     let constructor = "mlir::triton::gen::createGetProgramIdOpToLLVMPass()";
 
@@ -105,7 +105,7 @@ def MathToVecLib : Pass<"triton-gen-math-to-vec-lib", "mlir::ModuleOp"> {
                 "Use Mvec as mm lib")
               )}]>,
         ListOption<"gen_features", "gen_features", "std::string",
-             "A list of available CPU features to choose proper vector functions">,
+             "A list of available GEN features to choose proper vector functions">,
     ];
 
     let dependentDialects = ["mlir::vector::VectorDialect",

@@ -3,7 +3,7 @@
 #include "TritonGENTransforms/Passes.h"
 #include "TritonToTritonGEN/Passes.h"
 
-#include "triton/Dialect/TritonGEN/IR/Dialect.h"
+#include "Dialect/TritonGEN/IR/Dialect.h"
 
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/Passes.h"

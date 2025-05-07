@@ -1,0 +1,9 @@
+#ifndef TRITON_DIALECT_TRITONGEN_IR_ATTRIBUTES_H_
+#define TRITON_DIALECT_TRITONGEN_IR_ATTRIBUTES_H_
+
+#include "Dialect/TritonGEN/IR/TritonGENInterfaces.h"
+
+#define GET_ATTRDEF_CLASSES
+#include "Dialect/TritonGEN/IR/TritonGENAttrDefs.h.inc"
+
+#endif // TRITON_DIALECT_TRITONGEN_IR_ATTRIBUTES_H_

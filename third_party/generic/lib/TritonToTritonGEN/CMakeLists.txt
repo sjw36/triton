@@ -15,6 +15,7 @@ add_triton_library(TritonToTritonGEN
     TypeConverter.cpp
 
     DEPENDS
+    TritonConversionPassIncGen
     TritonToTritonGENPassIncGen
     ScalarizeInterfaceIncGen
     MLIRDialectUtils

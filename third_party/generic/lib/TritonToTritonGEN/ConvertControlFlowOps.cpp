@@ -14,7 +14,7 @@
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Membar.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonGEN/IR/Dialect.h"
+#include "Dialect/TritonGEN/IR/Dialect.h"
 
 namespace mlir {
 namespace triton {
