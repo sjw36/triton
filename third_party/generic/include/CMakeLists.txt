@@ -1,0 +1,4 @@
+add_subdirectory(ScalarizePass)
+add_subdirectory(TritonGENToLLVM)
+add_subdirectory(TritonGENTransforms)
+add_subdirectory(TritonToTritonGEN)
