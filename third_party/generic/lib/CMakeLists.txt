@@ -1,0 +1,4 @@
+add_subdirectory(Analysis)
+add_subdirectory(TritonGENToLLVM)
+add_subdirectory(TritonGENTransforms)
+add_subdirectory(TritonToTritonGEN)
