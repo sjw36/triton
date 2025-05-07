@@ -38,7 +38,7 @@ bool mlir::triton::gen::canComputeScalarValue(Value vals) {
 
 namespace {
 
-namespace detail {
+namespace gen_detail {
 
 template <typename T> struct value_type_trait {
   using type = typename T::value_type;
@@ -63,7 +63,7 @@ Value createZeroIndex(mlir::Location loc, PatternRewriter &rewriter) {
   return rewriter.create<arith::ConstantIndexOp>(loc, 0);
 }
 
-} // namespace detail
+} // namespace gen_detail
 
 // Using ScalariztionFunctor class to partially specialize helper method
 template <typename OpTy> struct ScalariztionFunctor {
@@ -179,7 +179,7 @@ template <> struct ScalariztionFunctor<BroadcastOp> {
   Value getScalarValue(BroadcastOp operation, Value vals, T indices,
                        PatternRewriter &rewriter) {
     BroadcastOp def = operation;
-    using UnderlyingIndicesType = typename detail::value_type_trait<T>::type;
+    using UnderlyingIndicesType = typename gen_detail::value_type_trait<T>::type;
     // Find broadcasted dimensions and replace indices for those
     // dimensions with 0 (broadcasted dimension has always size 1).
     SmallVector<UnderlyingIndicesType> newIndices;
@@ -188,7 +188,7 @@ template <> struct ScalariztionFunctor<BroadcastOp> {
     assert(sourceTy.getRank() == indices.size() && "Mismatched rank");
     for (int64_t i = 0; i < sourceTy.getRank(); ++i) {
       if (sourceTy.getShape()[i] != targetTy.getShape()[i])
-        newIndices.push_back(detail::createZeroIndex<UnderlyingIndicesType>(
+        newIndices.push_back(gen_detail::createZeroIndex<UnderlyingIndicesType>(
             std::move(def.getLoc()), rewriter));
       else
         newIndices.push_back(indices[i]);
@@ -202,7 +202,7 @@ template <> struct ScalariztionFunctor<ExpandDimsOp> {
   template <typename T>
   Value getScalarValue(ExpandDimsOp def, Value vals, T indices,
                        PatternRewriter &rewriter) {
-    using UnderlyingIndicesType = typename detail::value_type_trait<T>::type;
+    using UnderlyingIndicesType = typename gen_detail::value_type_trait<T>::type;
     // Remove index at expanded dimension.
     SmallVector<UnderlyingIndicesType> newIndices(indices);
     newIndices.erase(newIndices.begin() + def.getAxis());
@@ -239,7 +239,7 @@ template <> struct ScalariztionFunctor<TransOp> {
   Value getScalarValue(TransOp def, Value vals, T indices,
                        PatternRewriter &rewriter) {
 
-    using UnderlyingIndicesType = typename detail::value_type_trait<T>::type;
+    using UnderlyingIndicesType = typename gen_detail::value_type_trait<T>::type;
 
     // Permute indices.
     SmallVector<UnderlyingIndicesType> newIndices;

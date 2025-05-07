@@ -1,6 +1,6 @@
 #include "TypeConverter.h"
 
-#include "triton/Dialect/TritonGEN/IR/Dialect.h"
+#include "Dialect/TritonGEN/IR/Dialect.h"
 
 using namespace mlir;
 using namespace mlir::triton;

@@ -11,7 +11,7 @@
 
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonGEN/IR/Dialect.h"
+#include "Dialect/TritonGEN/IR/Dialect.h"
 
 namespace mlir {
 namespace triton {
@@ -61,7 +61,7 @@ template <typename OpT>
 struct DecomposeToNativeVecs : public OpRewritePattern<OpT> {
 public:
   using OpRewritePattern<OpT>::OpRewritePattern;
-  // CPU SIMD vector size in bits
+  // GEN SIMD vector size in bits
   size_t vec_bits;
 
   DecomposeToNativeVecs(MLIRContext *context,

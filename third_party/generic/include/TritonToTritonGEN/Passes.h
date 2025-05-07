@@ -1,6 +1,7 @@
 #ifndef TRITONTOTRITONGEN_CONVERSION_PASSES_H
 #define TRITONTOTRITONGEN_CONVERSION_PASSES_H
 
+#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Pass/Pass.h"

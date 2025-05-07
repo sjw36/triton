@@ -1,7 +1,7 @@
 #include "OpTypeConversion.h"
 #include "TypeConverter.h"
 
-#include "generic/include/TritonToTritonGEN/Passes.h"
+#include "TritonToTritonGEN/Passes.h"
 
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Index/IR/IndexDialect.h"
@@ -15,7 +15,7 @@
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Membar.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonGEN/IR/Dialect.h"
+#include "Dialect/TritonGEN/IR/Dialect.h"
 
 namespace mlir {
 namespace triton {

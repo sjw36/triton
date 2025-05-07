@@ -11,7 +11,7 @@
 
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Dialect/TritonGEN/IR/Dialect.h"
+#include "Dialect/TritonGEN/IR/Dialect.h"
 
 #if defined(ONEDNN_AVAILABLE)
 #include "oneapi/dnnl/dnnl_types.h"
