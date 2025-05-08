@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Dict, Optional, Tuple
 
-from triton._C.libtriton import gen, ir, llvm, passes
+from triton._C.libtriton import generic, ir, llvm, passes
 from triton.backends.compiler import BaseBackend, GPUTarget
 from triton.runtime.build import _build
-import triton.backends.gen.driver as gen_driver
+import triton.backends.generic.driver as gen_driver
 
 
 def min_dot_size(target: GPUTarget):
@@ -19,8 +19,8 @@ def min_dot_size(target: GPUTarget):
     return lambda lhsType, rhsType: (4, 4, 4)
 
 
-VecLib = gen.passes.ttgenir.VecLib
-Ukernels = gen.passes.ttgenir.Ukernels
+VecLib = generic.passes.ttgenir.VecLib
+Ukernels = generic.passes.ttgenir.Ukernels
 
 
 @dataclass(frozen=True)
@@ -170,18 +170,18 @@ class GENBackend(BaseBackend):
         # TTIR -> TTCIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
-        gen.passes.ttgenir.add_scalarize(pm, True)
-        gen.passes.ttgenir.add_convert_memory_ops(pm, True)
-        gen.passes.ttgenir.add_convert_ptr_ops(pm)
-        gen.passes.ttgenir.add_convert_elementwise_ops(pm)
-        gen.passes.ttgenir.add_convert_elem_manip_ops(pm)
-        gen.passes.ttgenir.add_convert_dot_op(pm)
-        gen.passes.ttgenir.add_convert_histogram_op(pm)
-        gen.passes.ttgenir.add_convert_reduction_op(pm, True, False)
-        gen.passes.ttgenir.add_convert_scan_op(pm)
-        gen.passes.ttgenir.add_convert_cf_ops(pm)
-        gen.passes.ttgenir.add_convert_atomic_ops(pm)
-        gen.passes.ttgenir.add_convert_debug_ops(pm)
+        generic.passes.ttgenir.add_scalarize(pm, True)
+        generic.passes.ttgenir.add_convert_memory_ops(pm, True)
+        generic.passes.ttgenir.add_convert_ptr_ops(pm)
+        generic.passes.ttgenir.add_convert_elementwise_ops(pm)
+        generic.passes.ttgenir.add_convert_elem_manip_ops(pm)
+        generic.passes.ttgenir.add_convert_dot_op(pm)
+        generic.passes.ttgenir.add_convert_histogram_op(pm)
+        generic.passes.ttgenir.add_convert_reduction_op(pm, True, False)
+        generic.passes.ttgenir.add_convert_scan_op(pm)
+        generic.passes.ttgenir.add_convert_cf_ops(pm)
+        generic.passes.ttgenir.add_convert_atomic_ops(pm)
+        generic.passes.ttgenir.add_convert_debug_ops(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_canonicalizer(pm)
@@ -193,40 +193,40 @@ class GENBackend(BaseBackend):
         # TTCIR -> Target TTCIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
-        gen.passes.ttgenir.add_triton_gen_canonicalizer(pm)
-        gen.passes.ttgenir.add_optimize_masks(pm)
+        generic.passes.ttgenir.add_triton_gen_canonicalizer(pm)
+        generic.passes.ttgenir.add_optimize_masks(pm)
         passes.common.add_canonicalizer(pm)
         if (ukernels := opt.get_ukernels()):
             # For further analysis simplification
-            gen.passes.ttgenir.add_loop_invariant_code_motion(pm)
-            gen.passes.ttgenir.add_convert_dot_to_ukernels(pm, ukernels)
+            generic.passes.ttgenir.add_loop_invariant_code_motion(pm)
+            generic.passes.ttgenir.add_convert_dot_to_ukernels(pm, ukernels)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
         convert_bf16_dot_product = ((self.gen_arch == "aarch64" or self.gen_arch == "armv8")
                                     and 'fp-armv8' in self.gen_features and 'neon' in self.gen_features)
         if convert_bf16_dot_product:
             use_horizontal_sum = os.getenv("TRITON_GEN_DOT_PROD_HORIZ_SUM", "1") == "1"
-            gen.passes.ttgenir.add_convert_dot_product(pm, use_horizontal_sum)
+            generic.passes.ttgenir.add_convert_dot_product(pm, use_horizontal_sum)
         if 'amx-tile' in self.gen_features:
             amx_int8 = 'amx-int8' in self.gen_features
             # amx_fp16 = 'amx-fp16' in self.gen_features
             # FP16 support is not in AMX dialect yet
             amx_fp16 = False
             amx_bf16 = 'amx-bf16' in self.gen_features
-            gen.passes.ttgenir.add_convert_dot_to_amx(pm, amx_int8, amx_fp16, amx_bf16)
+            generic.passes.ttgenir.add_convert_dot_to_amx(pm, amx_int8, amx_fp16, amx_bf16)
         if 'avx512f' in self.gen_features:
-            gen.passes.ttgenir.add_convert_dot_to_fma(pm)
-        gen.passes.ttgenir.add_convert_dot_generic(pm)
+            generic.passes.ttgenir.add_convert_dot_to_fma(pm)
+        generic.passes.ttgenir.add_convert_dot_generic(pm)
         promote_bf16_to_fp32 = self.gen_arch == "x86_64" and "avx512bf16" not in self.gen_features
         # We don't have any lowering for mixed precision matmuls, so always use casts for now
         convert_mixed_precision_matmul = True
         # We don't have math lib functions for FP8, FP16, BF16. Promote such operations to FP32.
         promote_lib_math_to_fp32 = True
-        gen.passes.ttgenir.add_convert_unsupported_ops(pm, promote_bf16_to_fp32, convert_mixed_precision_matmul,
+        generic.passes.ttgenir.add_convert_unsupported_ops(pm, promote_bf16_to_fp32, convert_mixed_precision_matmul,
                                                        promote_lib_math_to_fp32)
         decompose_bf16_conv = self.gen_arch == "x86_64" and "avx512bf16" not in self.gen_features
         decompose_fp8_conv = True
-        gen.passes.ttgenir.add_decompose_fp_conversions(pm, decompose_bf16_conv, decompose_fp8_conv)
+        generic.passes.ttgenir.add_decompose_fp_conversions(pm, decompose_bf16_conv, decompose_fp8_conv)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_canonicalizer(pm)
@@ -244,37 +244,37 @@ class GENBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         if options.get_ukernels() == Ukernels.OneDNN:
-            gen.passes.ttgenir.add_ukernels_to_onednn_llvmir(pm)
+            generic.passes.ttgenir.add_ukernels_to_onednn_llvmir(pm)
         if options.get_ukernels() == Ukernels.XSMM:
-            gen.passes.ttgenir.add_ukernels_to_xsmm_llvmir(pm)
-        gen.passes.ttgenir.add_lower_vector_multi_dim(pm)
-        gen.passes.ttgenir.add_expand_strided_metadata(pm)
-        gen.passes.ttgenir.add_vector_to_scf(pm, True, 1, False)
-        gen.passes.ttgenir.add_lower_affine(pm)
+            generic.passes.ttgenir.add_ukernels_to_xsmm_llvmir(pm)
+        generic.passes.ttgenir.add_lower_vector_multi_dim(pm)
+        generic.passes.ttgenir.add_expand_strided_metadata(pm)
+        generic.passes.ttgenir.add_vector_to_scf(pm, True, 1, False)
+        generic.passes.ttgenir.add_lower_affine(pm)
         passes.convert.add_scf_to_cf(pm)
         passes.convert.add_index_to_llvmir(pm)
-        gen.passes.ttgenir.add_func_op_to_llvmir(pm)
-        gen.passes.ttgenir.add_program_id_to_llvmir(pm)
-        gen.passes.ttgenir.add_memory_op_to_llvmir(pm)
-        gen.passes.ttgenir.add_atomic_ops_to_llvmir(pm)
-        gen.passes.ttgenir.add_debug_ops_to_llvmir(pm)
+        generic.passes.ttgenir.add_func_op_to_llvmir(pm)
+        generic.passes.ttgenir.add_program_id_to_llvmir(pm)
+        generic.passes.ttgenir.add_memory_op_to_llvmir(pm)
+        generic.passes.ttgenir.add_atomic_ops_to_llvmir(pm)
+        generic.passes.ttgenir.add_debug_ops_to_llvmir(pm)
 
         #vec_lib_requirements = {
         #    VecLib.libsleef: {"neon", "sse", "avx"},
         #    VecLib.libmvec: {"avx512f"},
         #}
         #if (vec_lib := options.get_vec_lib()) and vec_lib_requirements[vec_lib] & self.gen_features:
-        #    gen.passes.ttgenir.add_math_to_vec_lib(pm, vec_lib, self.gen_features)
+        #    generic.passes.ttgenir.add_math_to_vec_lib(pm, vec_lib, self.gen_features)
 
         passes.convert.add_math_to_llvmir(pm)
-        gen.passes.ttgenir.add_math_to_libm(pm)
-        gen.passes.ttgenir.add_vector_to_llvmir(pm, options.enable_fast_math)
-        gen.passes.ttgenir.add_memref_to_llvmir(pm)
+        generic.passes.ttgenir.add_math_to_libm(pm)
+        generic.passes.ttgenir.add_vector_to_llvmir(pm, options.enable_fast_math)
+        generic.passes.ttgenir.add_memref_to_llvmir(pm)
         passes.convert.add_reconcile_unrealized(pm)
         passes.convert.add_arith_to_llvmir(pm)
         # passes.convert.add_cf_to_llvmir(pm)
-        gen.passes.ttgenir.add_func_to_llvmir(pm)
-        gen.passes.ttgenir.add_ub_to_llvmir(pm)
+        generic.passes.ttgenir.add_func_to_llvmir(pm)
+        generic.passes.ttgenir.add_ub_to_llvmir(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)

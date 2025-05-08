@@ -459,7 +459,7 @@ class GENDriver(DriverBase):
 
     def get_active_torch_device(self):
         import torch
-        return torch.device("gen", self.get_current_device())
+        return torch.device("cpu", self.get_current_device())
 
     def get_current_stream(self, device):
         return 0
@@ -467,7 +467,7 @@ class GENDriver(DriverBase):
     def get_current_target(self):
         # Capability and warp size are zeros for GEN.
         # TODO: GPUTarget naming isn't obviously good.
-        gen_arch = llvm.get_gen_tripple().split("-")[0]
+        gen_arch = llvm.get_target_triple().split("-")[0]
         return GPUTarget("gen", gen_arch, 0)
 
     def get_device_interface(self):
