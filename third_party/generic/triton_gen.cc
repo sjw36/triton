@@ -49,7 +49,7 @@ bool is_xsmm_available() {
 
 namespace py = pybind11;
 
-void init_triton_gen_passes_ttgenir(py::module &&m) {
+void init_triton_generic_passes_ttgenir(py::module &&m) {
   using namespace mlir::triton;
 
   py::enum_<gen::VecLib>(m, "VecLib")
@@ -228,9 +228,9 @@ void init_triton_gen_passes_ttgenir(py::module &&m) {
   });
 }
 
-void init_triton_gen(py::module &&m) {
+void init_triton_generic(py::module &&m) {
   auto passes = m.def_submodule("passes");
-  init_triton_gen_passes_ttgenir(passes.def_submodule("ttgenir"));
+  init_triton_generic_passes_ttgenir(passes.def_submodule("ttgenir"));
 
   m.def("enable_amx", []() -> bool {
 #if defined(__linux__) && defined(ARCH_REQ_XCOMP_PERM)
