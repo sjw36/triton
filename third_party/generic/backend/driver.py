@@ -467,7 +467,7 @@ class GENDriver(DriverBase):
     def get_current_target(self):
         # Capability and warp size are zeros for GEN.
         # TODO: GPUTarget naming isn't obviously good.
-        gen_arch = llvm.get_target_triple().split("-")[0]
+        gen_arch = llvm.get_cpu_triple().split("-")[0]
         return GPUTarget("gen", gen_arch, 0)
 
     def get_device_interface(self):

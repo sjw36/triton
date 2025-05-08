@@ -84,7 +84,7 @@ class GENOptions:
                 f"Unexpected value for ukernels: {raw_ukernels}, should be one of {{{', '.join(Ukernels.__members__.keys())}}}"
             )
 
-        if ukernels == Ukernels.OneDNN and not gen.onednn_available():
+        if ukernels == Ukernels.OneDNN and not generic.onednn_available():
             import warnings
             # Warns on each compileation
             warnings.simplefilter('once', category=UserWarning)
@@ -93,7 +93,7 @@ class GENOptions:
                 stacklevel=1)
             return None
 
-        if ukernels == Ukernels.XSMM and not gen.xsmm_available():
+        if ukernels == Ukernels.XSMM and not generic.xsmm_available():
             import warnings
             # Warns on each compileation
             warnings.simplefilter('once', category=UserWarning)
@@ -114,12 +114,12 @@ class GENBackend(BaseBackend):
     def __init__(self, target: tuple) -> None:
         super().__init__(target)
         self.binary_ext = "so"
-        self.gen_arch = llvm.get_gen_tripple().split("-")[0]
-        self.gen_name = llvm.get_gen_name()
+        self.gen_arch = llvm.get_cpu_triple().split("-")[0]
+        self.gen_name = llvm.get_cpu_name()
         print(f"GEN: {self.gen_arch} -- NAME: {self.gen_name}")
-        self.gen_features = llvm.get_gen_features()
+        self.gen_features = llvm.get_cpu_features()
         if 'amx-tile' in self.gen_features:
-            if not gen.enable_amx():
+            if not generic.enable_amx():
                 import warnings
                 warnings.warn("Warning! Couldn't enable AMX for the process. AMX optimizations are disabled.")
                 self.gen_features.discard('amx-tile')
@@ -148,7 +148,7 @@ class GENBackend(BaseBackend):
         return {"triton.language.extra.libdevice": libdevice}
 
     def load_dialects(self, ctx):
-        gen.load_dialects(ctx)
+        generic.load_dialects(ctx)
 
     @staticmethod
     def make_ttir(mod, metadata, opt):
@@ -283,7 +283,7 @@ class GENBackend(BaseBackend):
         pm.run(mod)
 
         # Find kernel fn
-        kernel_names = gen.find_kernel_names(mod)
+        kernel_names = generic.find_kernel_names(mod)
         assert len(kernel_names) == 1, f"expected exactly 1 kernel in a module, got {kernel_names}"
 
         # LLVM-IR (MLIR) -> LLVM-IR (LLVM)
@@ -297,7 +297,6 @@ class GENBackend(BaseBackend):
         #    paths = [path for (name, path) in options.extern_libs]
         #   llvm.link_extern_libs(llvm_mod, paths)
         print(f"GEN: {self.gen_arch} -- NAME: {self.gen_name}")
-        return 0
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
         # Get some metadata
         metadata["shared"] = 0
