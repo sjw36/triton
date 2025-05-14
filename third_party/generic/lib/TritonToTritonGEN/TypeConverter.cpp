@@ -15,6 +15,7 @@ TritonToTritonGENTypeConverter::TritonToTritonGENTypeConverter() {
     return VectorType::get(tensorTy.getShape(), elemTy);
   });
 
+  /* 
   addArgumentMaterialization([&](OpBuilder &builder, Type type,
                                  ValueRange inputs, Location loc) -> Value {
     if (isa<TensorType>(type))
@@ -26,6 +27,7 @@ TritonToTritonGENTypeConverter::TritonToTritonGENTypeConverter() {
     llvm::errs() << "Type: " << type << "\n";
     llvm_unreachable("Unexpected argument materizalization");
   });
+  */
 
   // Converted ops produce vectors instead of tensors. Provide conversion
   // here for users.
