@@ -1,6 +1,7 @@
 import functools
 import hashlib
 import os
+from sys import stderr
 import tempfile
 from pathlib import Path
 
@@ -28,6 +29,9 @@ class GENOptions:
     # GPU-specific options are used in several places.
     # For now, we just provide dummy values.
     backend_name: str = "gen"
+    gen_triple: str = ""
+    gen_arch: str = ""
+
     # These options provide compatibility with GPU kernel calls.
     # All of them are ignored.
     num_warps: int = 0
@@ -114,7 +118,8 @@ class GENBackend(BaseBackend):
     def __init__(self, target: tuple) -> None:
         super().__init__(target)
         self.binary_ext = "so"
-        self.gen_arch = llvm.get_cpu_triple().split("-")[0]
+        self.gen_triple = os.getenv("TRITON_GEN_TARGET", llvm.get_cpu_triple())
+        self.gen_arch = os.getenv("TRITON_GEN_ARCH", self.gen_triple.split('-')[0])
         self.gen_name = llvm.get_cpu_name()
         print(f"GEN: {self.gen_arch} -- NAME: {self.gen_name}")
         self.gen_features = llvm.get_cpu_features()
@@ -166,7 +171,7 @@ class GENBackend(BaseBackend):
         return mod
 
     @staticmethod
-    def make_ttcir(mod, metadata, opt):
+    def make_ttgir(mod, metadata, opt):
         # TTIR -> TTCIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
@@ -189,7 +194,7 @@ class GENBackend(BaseBackend):
         metadata["cluster_dims"] = (opt.cluster_dims[0], opt.cluster_dims[1], opt.cluster_dims[2])
         return mod
 
-    def make_tttcir(self, mod, metadata, opt):
+    def make_tttgir(self, mod, metadata, opt):
         # TTCIR -> Target TTCIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
@@ -234,6 +239,7 @@ class GENBackend(BaseBackend):
         return mod
 
     def make_llir(self, src, metadata, options):
+        print(f"MAKE_LLIR: {self.gen_arch}", file=stderr)
         # warp-specialization mutates num_warps
         num_warp_groups = src.get_int_attr("triton_gpu.num-warp-groups-per-cta")
         if num_warp_groups is not None:
@@ -292,12 +298,12 @@ class GENBackend(BaseBackend):
         llvm_mod = llvm.to_module(mod, context)
         if llvm_mod is None:
             raise RuntimeError("Failed to convert to LLVM IR")
-        llvm.set_host_target(llvm_mod)
+        llvm.set_host_target(llvm_mod, self.gen_triple, self.gen_arch)
         #if options.extern_libs:
         #    paths = [path for (name, path) in options.extern_libs]
         #   llvm.link_extern_libs(llvm_mod, paths)
         print(f"GEN: {self.gen_arch} -- NAME: {self.gen_name}")
-        llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
+        llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3, self.gen_arch) # , self.gen_features)
         # Get some metadata
         metadata["shared"] = 0
         metadata["name"] = kernel_names[0]
@@ -306,9 +312,9 @@ class GENBackend(BaseBackend):
         del context
         return ret
 
-    @staticmethod
-    def make_asm(src, metadata, options):
-        return llvm.translate_to_host_asm(src, options.enable_fp_fusion, options.enable_fast_math)
+    def make_asm(self, src, metadata, options):
+        print(f"MAKE_ASM: {self.gen_arch}", file=stderr)
+        return llvm.translate_to_host_asm(src, self.gen_triple, self.gen_arch, options.enable_fp_fusion, options.enable_fast_math)
 
     @staticmethod
     def make_so(src, metadata, options):
@@ -323,8 +329,8 @@ class GENBackend(BaseBackend):
 
     def add_stages(self, stages, options):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
-        stages["ttcir"] = lambda src, metadata: self.make_ttcir(src, metadata, options)
-        stages["tttcir"] = lambda src, metadata: self.make_tttcir(src, metadata, options)
+        stages["ttgir"] = lambda src, metadata: self.make_ttgir(src, metadata, options)
+        stages["tttgir"] = lambda src, metadata: self.make_tttgir(src, metadata, options)
         stages["llir"] = lambda src, metadata: self.make_llir(src, metadata, options)
         stages["asm"] = lambda src, metadata: self.make_asm(src, metadata, options)
         stages["so"] = lambda src, metadata: self.make_so(src, metadata, options)

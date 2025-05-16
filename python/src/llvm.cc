@@ -441,8 +441,9 @@ void init_triton_llvm(py::module &&m) {
       py::arg("flags") = std::vector<std::string>{},
       py::arg("enable_fp_fusion") = false);
 
-  m.def("set_host_target", [](llvm::Module *mod) {
-    auto triple = getDefaultTargerOrProcessTriple();
+  m.def("set_host_target", [](llvm::Module *mod, std::string triple, std::string arch) {
+    if (triple.empty())
+      triple = getDefaultTargerOrProcessTriple();
     mod->setTargetTriple(Triple(triple));
     std::string error;
     auto target =
@@ -451,14 +452,13 @@ void init_triton_llvm(py::module &&m) {
       throw std::runtime_error("target lookup error: " + error);
     }
     std::unique_ptr<llvm::TargetMachine> machine{target->createTargetMachine(
-        mod->getTargetTriple(), llvm::sys::getHostCPUName(), "", {},
-        llvm::Reloc::PIC_)};
+        mod->getTargetTriple(), arch, "", {}, llvm::Reloc::PIC_)};
     mod->setDataLayout(machine->createDataLayout());
   });
 
   m.def(
       "translate_to_host_asm",
-      [](std::string llvmIR, bool enable_fp_fusion,
+      [](std::string llvmIR, std::string triple, std::string arch, bool enable_fp_fusion,
          bool enable_fast_math) -> py::object {
         std::string res;
         {
@@ -476,9 +476,8 @@ void init_triton_llvm(py::module &&m) {
                 "failed to parse IR: " + error.getMessage() +
                 "lineno: " + std::to_string(error.getLineNo()));
           }
-          auto triple = getDefaultTargerOrProcessTriple();
           res = translateLLVMIRToASM(*module, triple,
-                                     llvm::sys::getHostCPUName().str(), "", {},
+                                     arch, "", {},
                                      enable_fp_fusion, false, enable_fast_math);
         }
         return py::str(res);
