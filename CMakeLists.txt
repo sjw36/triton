@@ -246,6 +246,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
     LLVMRISCVAsmParser
     LLVMX86CodeGen
     LLVMX86AsmParser
+    LLVMAArch64CodeGen
+    LLVMAArch64AsmParser
 
     Python3::Module
     pybind11::headers
