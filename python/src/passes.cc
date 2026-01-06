@@ -112,8 +112,8 @@ void init_plugin_passes(py::module &&m) {
 
   for (unsigned i = 0; i < passNames.size(); ++i) {
     const char *passName = passNames.data()[i];
-
-    m.def(passName, [passName](mlir ::PassManager &pm) {
+    std::string add_pass_name = std::string("add_") + passName;
+    m.def(add_pass_name.c_str(), [passName](mlir ::PassManager &pm) {
       std::string filename =
           mlir::triton::tools::getStrEnv("TRITON_PASS_PLUGIN_PATH");
       TritonPlugin TP(filename);
@@ -157,5 +157,5 @@ void init_triton_passes(py::module &&m) {
   init_triton_passes_ttgpuir(m.def_submodule("ttgpuir"));
   init_triton_passes_llvmir(m.def_submodule("llvmir"));
   init_gluon_passes(m.def_submodule("gluon"));
-  init_plugin_passes(m.def_submodule("plugin"));
+  init_plugin_passes(m.def_submodule("ttext"));
 }

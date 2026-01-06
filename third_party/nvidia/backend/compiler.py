@@ -241,6 +241,9 @@ class CUDABackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.ttir.add_loop_unroll(pm)
+        if hasattr(passes.ttext, 'add_loop_split'):
+            passes.ttext.add_loop_split(pm)
+            passes.common.add_canonicalizer(pm)
         pm.run(mod, 'make_ttir')
         return mod
 
