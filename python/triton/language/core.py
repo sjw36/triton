@@ -1499,7 +1499,6 @@ class tensor_descriptor_type(tensor_descriptor_base_type):
         return value, cursor
 
     def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
-        ## FOUND TENSOR DESCRIPTOR TYPE HERE
         super()._flatten_ir_types(builder, out)
         self.shape_type._flatten_ir_types(builder, out)
         self.strides_type._flatten_ir_types(builder, out)
@@ -1535,6 +1534,7 @@ class tensor_descriptor(tensor_descriptor_base):
         super()._flatten_ir(handles)
         self.shape._flatten_ir(handles)
         self.strides._flatten_ir(handles)
+
 
 # -----------------------
 # aggregate
