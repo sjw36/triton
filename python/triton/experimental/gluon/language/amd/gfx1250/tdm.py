@@ -68,7 +68,7 @@ class tensor_descriptor(ttgl.base_value):
         self.strides._set_name(builder, name + ".stride")
 
     def _flatten_ir(self, handles: List[ir.value]) -> None:
-        super()._flatten_ir(handles)
+        handles.append(self.handle)
         self.shape._flatten_ir(handles)
         self.strides._flatten_ir(handles)
 
