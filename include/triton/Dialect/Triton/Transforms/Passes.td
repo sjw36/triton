@@ -90,4 +90,12 @@ def TritonLoopAwareCSE : Pass<"triton-loop-aware-cse", "mlir::ModuleOp"> {
   }];
 }
 
+def TritonComputeDensityAnalysis : Pass</*cli-arg*/"triton-compute-density-analysis", /*Op*/"mlir::ModuleOp"> {
+  let summary = "Calculate the algorithmic compute density";
+  let description = [{
+    This pass will calculate the algorithmic compute density of the kernel.
+  }];
+}
+
+
 #endif
