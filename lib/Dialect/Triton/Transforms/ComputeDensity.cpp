@@ -1,9 +1,13 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/Dominance.h"
 #include "mlir/Pass/Pass.h"
+
+#include "llvm/Support/Debug.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
+#define DEBUG_TYPE "triton-compute-density-analysis"
+#define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
+#define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 using namespace mlir;
 
@@ -23,7 +27,9 @@ namespace {
 // 2) Bottom up collect metrics and aggregate them to the function level
 //    - for loop: multiply by loop iterations
 //    - if/else: max CD of all branch
-// 3) Return the compute density
+// 3) Annotate the function with the compute density (bandwidth and compute)
+//    - add a new attribute to the function arguments
+
 
 class Metric {
  public:
@@ -34,7 +40,7 @@ class Metric {
     Other,
   };
 
-  Metric(MetricKind kind=MetricKind::Compute, int64_t size=0, Type elementType=nullptr)
+  Metric(MetricKind kind=MetricKind::Other, int64_t size=0, Type elementType=nullptr)
    : kind(kind), size(size), elementType(elementType) {}
 
   MetricKind getKind() const { return kind; }
@@ -106,10 +112,10 @@ class BlockMetrics {
       auto type = op->getResult(0).getType();
       return Metric(Metric::MetricKind::Load, getNumElements(type), getElementType(type));
     } else if (isStoreLikeOp(op)) {
-      auto type = op->getOperand(0).getType();
+      auto type = op->getOperand(1).getType();
       return Metric(Metric::MetricKind::Store, getNumElements(type), getElementType(type));
     } else if (isa<scf::YieldOp>(op)) {
-      return Metric(Metric::MetricKind::Other);
+      return Metric();
     } else if (auto dotOp = dyn_cast<triton::DotOp>(op)) {
       // FLOPS = M * N * K * 2
       auto aType = cast<RankedTensorType>(dotOp.getA().getType());
@@ -126,33 +132,14 @@ class BlockMetrics {
       auto flops = getNumElements(value.getType());
       return Metric(Metric::MetricKind::Compute, flops, getElementType(value.getType()));
     } else if (isa<arith::ConstantOp>(op)) {
-      return Metric(Metric::MetricKind::Other);
+      return Metric();
     } else if (isa<scf::IfOp, scf::ForOp, scf::WhileOp>(op)) {
-      return Metric(Metric::MetricKind::Other);
+      return Metric();
     } else {
-      llvm::errs() << "Value is not a dot or elementwise operation: " << value << "\n";
+      LDBG("Value is not a dot or elementwise operation: " << value);
       auto flops = getNumElements(value.getType());
       return Metric(Metric::MetricKind::Compute, flops, getElementType(value.getType()));
     }
-  }
-
-  Metric calculateCompute(Value value, SmallVector<int32_t> &argIndices) {
-    if (auto blockArg = dyn_cast<BlockArgument>(value)) {
-      argIndices.push_back(blockArg.getArgNumber());
-      return Metric(Metric::MetricKind::Other);
-    }
-    auto defOp = value.getDefiningOp();
-    auto mval = metricsMap.at(value);
-    if (mval.getKind() != Metric::MetricKind::Compute) {
-      return mval;
-    }
-    for (auto operand : defOp->getOperands()) {
-      auto operandMetric = calculateCompute(operand, argIndices);
-      if (operandMetric.getKind() == Metric::MetricKind::Compute) {
-        mval.addSize(operandMetric.getSize());
-      }
-    }
-    return mval;
   }
 
  public:
@@ -167,6 +154,7 @@ class BlockMetrics {
         storeOps.push_back(&op);
       }
     }
+    LLVM_DEBUG(dump());
   }
 
   std::optional<Metric> getMetric(Value value) const {
@@ -205,6 +193,7 @@ class BlockMetrics {
 };
 
 class ComputeDensityAnalysisDriver {
+
   BlockArgument findPointerParam(Value value) {
     if (auto blockArg = dyn_cast<BlockArgument>(value)) {
       auto parentOp = blockArg.getOwner()->getParentOp();
@@ -219,7 +208,7 @@ class ComputeDensityAnalysisDriver {
         assert(false && "Not implemented");
         //return findPointerParam(ifOp.getOperand(blockArg.getArgNumber() + 1));
       } else {
-        llvm::errs() << "Unsupported operation: " << parentOp->getName() << "\n";
+        LDBG("Unsupported operation: " << parentOp->getName());
       }
     } else { // assert not scf::for, scf::if, scf::while, or func op
       auto defOp = value.getDefiningOp();
@@ -237,7 +226,7 @@ class ComputeDensityAnalysisDriver {
     if (auto blockArg = dyn_cast<BlockArgument>(value)) {
       auto parentOp = blockArg.getOwner()->getParentOp();
       if (auto funcOp = dyn_cast<triton::FuncOp>(parentOp)) {
-        return "arg" + std::to_string(blockArg.getArgNumber());
+        return "arg[" + std::to_string(blockArg.getArgNumber()) + "]";
       } else if (auto forOp = dyn_cast<scf::ForOp>(parentOp)) {
         assert(false && "Loop iterations derived from loop carried values not implemented");
         auto argNumber = blockArg.getArgNumber() - forOp.getNumInductionVars();
@@ -280,7 +269,7 @@ class ComputeDensityAnalysisDriver {
     auto upperBound = getSymbolicValue(forOp.getUpperBound());
     auto lowerBound = getSymbolicValue(forOp.getLowerBound());
     auto step = getSymbolicValue(forOp.getStep());
-    return "(" + upperBound + " - " + lowerBound + ") / " + step + ")";
+    return "((" + upperBound + " - " + lowerBound + ") / " + step + ")";
   }
 
  std::string calculateBandwidth(Operation *op, std::string symbolicSize) {
@@ -291,11 +280,13 @@ class ComputeDensityAnalysisDriver {
       auto numIterations = getSymbolicIterations(forOp);
       symbolicSize = numIterations + " * " + symbolicSize;
     } else if (auto ifOp = dyn_cast<scf::IfOp>(parentOp)) {
+      assert(false && "Not implemented");
       //auto thenSize = calculateBandwidth(ifOp.getThenBlock(), symbolicSize);
       //auto elseSize = calculateBandwidth(ifOp.getElseBlock(), symbolicSize);
       //symbolicSize = "max(" + thenSize + ", " + elseSize + ")";
     } else {
-      llvm::errs() << "Unsupported operation: " << parentOp->getName() << "\n";
+      LDBG("Unsupported operation: " << parentOp->getName());
+      assert(false && "Unsupported operation");
       return "";
     }
     return calculateBandwidth(parentOp, symbolicSize);
@@ -320,17 +311,15 @@ class ComputeDensityAnalysisDriver {
       auto yieldValue = yieldOp->getOperand(idx);
       SmallVector<BlockArgument> forBlockArgs;
       auto yieldMetric = calculateCompute(yieldValue, forBlockArgs);
-      computeSize = "(" + yieldMetric + ") * (" + getSymbolicIterations(forOp) + ")";
+      computeSize = "(" + getSymbolicIterations(forOp) + " * " + yieldMetric + ")";
       for (auto blockArg : forBlockArgs) {
         auto initArg = forOp.getInitArgs()[blockArg.getArgNumber() - forOp.getNumInductionVars()];
         auto initArgMetric = calculateCompute(initArg, blockArgs);
         if (!initArgMetric.empty()) {
-          computeSize = "(" + computeSize + " + (" + initArgMetric + "))";
+          computeSize = "(" + computeSize + " + " + initArgMetric + ")";
         }
       }
       return computeSize;
-    } else if (isa<scf::IfOp>(defOp)) {
-      assert(false && "Not implemented");
     } else if (defOp->getNumRegions() > 0) {
       assert(false && "Not implemented");
     }
@@ -344,7 +333,7 @@ class ComputeDensityAnalysisDriver {
     for (auto operand : defOp->getOperands()) {
       auto operandMetric = calculateCompute(operand, blockArgs);
       if (!operandMetric.empty()) {
-        computeSize = "(" + operandMetric + ") + (" + computeSize + ")";
+        computeSize = operandMetric + " + " + computeSize;
       }
     }
     return computeSize;
@@ -409,19 +398,34 @@ class ComputeDensityAnalysisDriver {
         }
       }
     }
-    dump();
+    LLVM_DEBUG(dump());
+    // Apply to function parameters
+    for (auto [i, bandwidth] : llvm::enumerate(bandwidthMetrics)) {
+      if (!bandwidth.empty()) {
+        func.setArgAttr(i, "tt.bandwidth", StringAttr::get(func.getContext(), bandwidth));
+      }
+    }
+    for (auto [i, computeDensity] : llvm::enumerate(computeMetrics)) {
+      if (!computeDensity.empty()) {
+        func.setArgAttr(i, "tt.compute", StringAttr::get(func.getContext(), computeDensity));
+      }
+    }
   }
 
   void dump() {
     llvm::errs() << "Compute Density Analysis Driver: ----------------------------------------------\n";
     llvm::errs() << "Function: " << func.getName() << "\n";
     llvm::errs() << "Bandwidth Metrics: " << bandwidthMetrics.size() << "\n";
-    for (auto &metric : bandwidthMetrics) {
-      llvm::errs() << "Metric: size= " << metric << "\n";
+    for (auto [i, metric] : llvm::enumerate(bandwidthMetrics)) {
+      if (!metric.empty()) {
+        llvm::errs() << "Metric: index= " << i << ", size= " << metric << "\n";
+      }
     }
     llvm::errs() << "Compute Metrics: " << computeMetrics.size() << "\n";
-    for (auto &metric : computeMetrics) {
-      llvm::errs() << "Metric: type= " << metric << "\n";
+    for (auto [i, metric] : llvm::enumerate(computeMetrics)) {
+      if (!metric.empty()) {
+        llvm::errs() << "Metric: index= " << i << ", size= " << metric << "\n";
+      }
     }
   }
 
@@ -446,5 +450,6 @@ struct ComputeDensityAnalysis
     }
   }
 };
+
 } // namespace
 } // namespace
