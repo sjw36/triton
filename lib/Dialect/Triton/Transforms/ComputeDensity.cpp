@@ -4,19 +4,24 @@
 #include "llvm/Support/Debug.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Tools/StrUtil.h"
 
-#define DEBUG_TYPE "triton-compute-density-analysis"
+#define DEBUG_TYPE "triton-calculate-compute-density"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 using namespace mlir;
 
 namespace mlir::triton {
-#define GEN_PASS_DEF_TRITONCOMPUTEDENSITYANALYSIS
+#define GEN_PASS_DEF_TRITONCALCULATECOMPUTEDENSITY
 #include "triton/Dialect/Triton/Transforms/Passes.h.inc"
 } // namespace mlir::triton
 
 namespace {
+
+std::string makeExpr(const char *op, const SmallVector<std::string> &exprs) {
+  return "(" + triton::join(exprs, op) + ")";
+}
 
 // Compute Density Analysis Driver
 // 1) Process every operation in every block
@@ -31,6 +36,9 @@ namespace {
 //    - add a new attribute to the function arguments
 
 
+////////////////////////////////////////////////////////////////////////////////
+// Metric class
+////////////////////////////////////////////////////////////////////////////////
 class Metric {
  public:
   enum MetricKind {
@@ -67,6 +75,9 @@ class Metric {
   Type elementType;
 };
 
+////////////////////////////////////////////////////////////////////////////////
+// BlockMetrics class
+////////////////////////////////////////////////////////////////////////////////
 class BlockMetrics {
 
   bool isLoadLikeOp(Operation *op) const {
@@ -154,7 +165,6 @@ class BlockMetrics {
         storeOps.push_back(&op);
       }
     }
-    LLVM_DEBUG(dump());
   }
 
   std::optional<Metric> getMetric(Value value) const {
@@ -192,6 +202,9 @@ class BlockMetrics {
   SmallVector<Metric> resultMetrics;
 };
 
+////////////////////////////////////////////////////////////////////////////////
+// ComputeDensityAnalysisDriver class
+////////////////////////////////////////////////////////////////////////////////
 class ComputeDensityAnalysisDriver {
 
   BlockArgument findPointerParam(Value value) {
@@ -245,19 +258,19 @@ class ComputeDensityAnalysisDriver {
         operands.push_back(getSymbolicValue(operand));
       }
       if (isa<arith::AddIOp>(value.getDefiningOp())) {
-        return "(" + operands[0] + " + " + operands[1] + ")";
+        return makeExpr(" + ", operands);
       } else if (isa<arith::SubIOp>(value.getDefiningOp())) {
-        return "(" + operands[0] + " - " + operands[1] + ")";
+        return makeExpr(" - ", operands);
       } else if (isa<arith::MulIOp>(value.getDefiningOp())) {
-        return "(" + operands[0] + " * " + operands[1] + ")";
+        return makeExpr(" * ", operands);
       } else if (isa<arith::DivSIOp>(value.getDefiningOp())) {
-        return "(" + operands[0] + " / " + operands[1] + ")";
+        return makeExpr(" / ", operands);
       } else if (isa<arith::DivUIOp>(value.getDefiningOp())) {
-        return "(" + operands[0] + " / " + operands[1] + ")";
+        return makeExpr(" / ", operands);
       } else if (isa<arith::RemSIOp>(value.getDefiningOp())) {
-        return "(" + operands[0] + " % " + operands[1] + ")";
+        return makeExpr(" % ", operands);
       } else if (isa<arith::RemUIOp>(value.getDefiningOp())) {
-        return "(" + operands[0] + " % " + operands[1] + ")";
+        return makeExpr(" % ", operands);
       }
     }
     //llvm::unreachable("Unsupported operation");
@@ -269,7 +282,7 @@ class ComputeDensityAnalysisDriver {
     auto upperBound = getSymbolicValue(forOp.getUpperBound());
     auto lowerBound = getSymbolicValue(forOp.getLowerBound());
     auto step = getSymbolicValue(forOp.getStep());
-    return "((" + upperBound + " - " + lowerBound + ") / " + step + ")";
+    return makeExpr(" / ", {makeExpr(" - ", {upperBound, lowerBound}), step});
   }
 
  std::string calculateBandwidth(Operation *op, std::string symbolicSize) {
@@ -278,7 +291,7 @@ class ComputeDensityAnalysisDriver {
       return symbolicSize;
     } else if (auto forOp = dyn_cast<scf::ForOp>(parentOp)) {
       auto numIterations = getSymbolicIterations(forOp);
-      symbolicSize = numIterations + " * " + symbolicSize;
+      symbolicSize = makeExpr(" * ", {numIterations, symbolicSize});
     } else if (auto ifOp = dyn_cast<scf::IfOp>(parentOp)) {
       assert(false && "Not implemented");
       //auto thenSize = calculateBandwidth(ifOp.getThenBlock(), symbolicSize);
@@ -316,7 +329,7 @@ class ComputeDensityAnalysisDriver {
         auto initArg = forOp.getInitArgs()[blockArg.getArgNumber() - forOp.getNumInductionVars()];
         auto initArgMetric = calculateCompute(initArg, blockArgs);
         if (!initArgMetric.empty()) {
-          computeSize = "(" + computeSize + " + " + initArgMetric + ")";
+          computeSize = makeExpr(" + ", {computeSize, initArgMetric});
         }
       }
       return computeSize;
@@ -333,23 +346,30 @@ class ComputeDensityAnalysisDriver {
     for (auto operand : defOp->getOperands()) {
       auto operandMetric = calculateCompute(operand, blockArgs);
       if (!operandMetric.empty()) {
-        computeSize = operandMetric + " + " + computeSize;
+        computeSize = makeExpr(" + ", {operandMetric, computeSize});
       }
     }
     return computeSize;
   }
 
  public:
+
   ComputeDensityAnalysisDriver(triton::FuncOp func)
-   : func(func),
-     bandwidthMetrics(func.getNumArguments(), ""),
-     computeMetrics(func.getNumArguments(), "") {}
+   : func(func), bandwidthMetrics(func.getNumArguments()), computeMetrics(func.getNumArguments()) {}
 
   void run() {
     // Build metrics map
     func.walk<WalkOrder::PostOrder>([&](Block *block) {
       metrics.try_emplace(block, block);
     });
+
+    auto updateMetric = [&](std::string &metric, std::string symbolicSize) {
+      if (metric.empty()) {
+        metric = symbolicSize;
+      } else {
+        metric = makeExpr(" + ", {metric, symbolicSize});
+      }
+    };
 
     // Collect parameter metrics
     for (auto &[block, blockMetrics] : metrics) {
@@ -359,11 +379,7 @@ class ComputeDensityAnalysisDriver {
         auto metric = blockMetrics.getMetric(loadOp->getResult(0));
         if (metric) {
           auto symbolicSize = calculateBandwidth(loadOp, std::to_string(metric->getSize()));
-          if (bandwidthMetrics[param.getArgNumber()].empty()) {
-            bandwidthMetrics[param.getArgNumber()] = symbolicSize;
-          } else {
-            bandwidthMetrics[param.getArgNumber()] = "(" + bandwidthMetrics[param.getArgNumber()] + ") + (" + symbolicSize + ")";
-          }
+          updateMetric(bandwidthMetrics[param.getArgNumber()], symbolicSize);
           // assert(getType == metric.getElementType())
         }
       }
@@ -375,11 +391,7 @@ class ComputeDensityAnalysisDriver {
         auto metric = blockMetrics.getMetric(storeValue);
         if (metric) {
           auto symbolicSize = calculateBandwidth(storeOp, std::to_string(metric->getSize()));
-          if (bandwidthMetrics[param.getArgNumber()].empty()) {
-            bandwidthMetrics[param.getArgNumber()] = symbolicSize;
-          } else {
-            bandwidthMetrics[param.getArgNumber()] = "(" + bandwidthMetrics[param.getArgNumber()] + ") + (" + symbolicSize + ")";
-          }
+          updateMetric(bandwidthMetrics[param.getArgNumber()], symbolicSize);
           assert(computeMetrics[param.getArgNumber()].empty());
           SmallVector<BlockArgument> blockArgs;
           auto computeSize = calculateCompute(storeValue, blockArgs);
@@ -389,43 +401,40 @@ class ComputeDensityAnalysisDriver {
             computeSize = calculateBandwidth(parentOp, computeSize);
           }
           if (!computeSize.empty()) {
-            if (computeMetrics[param.getArgNumber()].empty()) {
-              computeMetrics[param.getArgNumber()] = computeSize;
-            } else {
-              computeMetrics[param.getArgNumber()] = "(" + computeMetrics[param.getArgNumber()] + ") + (" + computeSize + ")";
-            }
+            updateMetric(computeMetrics[param.getArgNumber()], computeSize);
           }
         }
       }
     }
     LLVM_DEBUG(dump());
-    // Apply to function parameters
-    for (auto [i, bandwidth] : llvm::enumerate(bandwidthMetrics)) {
-      if (!bandwidth.empty()) {
-        func.setArgAttr(i, "tt.bandwidth", StringAttr::get(func.getContext(), bandwidth));
-      }
+  }
+
+  std::optional<std::string> getBandwidthMetric(unsigned index) const {
+    if (index >= bandwidthMetrics.size() || bandwidthMetrics[index].empty()) {
+      return std::nullopt;
     }
-    for (auto [i, computeDensity] : llvm::enumerate(computeMetrics)) {
-      if (!computeDensity.empty()) {
-        func.setArgAttr(i, "tt.compute", StringAttr::get(func.getContext(), computeDensity));
-      }
+    return bandwidthMetrics[index];
+  }
+  std::optional<std::string> getComputeMetric(unsigned index) const {
+    if (index >= computeMetrics.size() || computeMetrics[index].empty()) {
+      return std::nullopt;
     }
+    return computeMetrics[index];
   }
 
   void dump() {
     llvm::errs() << "Compute Density Analysis Driver: ----------------------------------------------\n";
     llvm::errs() << "Function: " << func.getName() << "\n";
+    for (auto [block, blockMetrics] : metrics) {
+      blockMetrics.dump();
+    }
     llvm::errs() << "Bandwidth Metrics: " << bandwidthMetrics.size() << "\n";
-    for (auto [i, metric] : llvm::enumerate(bandwidthMetrics)) {
-      if (!metric.empty()) {
-        llvm::errs() << "Metric: index= " << i << ", size= " << metric << "\n";
-      }
+    for (int i = 0; i < func.getNumArguments(); i++) {
+      llvm::errs() << "Bandwidth Metric: index= " << i << ", size= " << bandwidthMetrics[i] << "\n";
     }
     llvm::errs() << "Compute Metrics: " << computeMetrics.size() << "\n";
-    for (auto [i, metric] : llvm::enumerate(computeMetrics)) {
-      if (!metric.empty()) {
-        llvm::errs() << "Metric: index= " << i << ", size= " << metric << "\n";
-      }
+    for (int i = 0; i < func.getNumArguments(); i++) {
+      llvm::errs() << "Compute Metric: index= " << i << ", size= " << computeMetrics[i] << "\n";
     }
   }
 
@@ -436,20 +445,29 @@ class ComputeDensityAnalysisDriver {
   SmallVector<std::string> computeMetrics;
 };
 
-namespace {
-struct ComputeDensityAnalysis
-    : public triton::impl::TritonComputeDensityAnalysisBase<ComputeDensityAnalysis> {
-  using TritonComputeDensityAnalysisBase::TritonComputeDensityAnalysisBase;
+////////////////////////////////////////////////////////////////////////////////
+// Pass CalculateComputeDensity
+////////////////////////////////////////////////////////////////////////////////
+struct CalculateComputeDensity
+    : public triton::impl::TritonCalculateComputeDensityBase<CalculateComputeDensity> {
+  using TritonCalculateComputeDensityBase::TritonCalculateComputeDensityBase;
 
   // TODO: get callgraph (see Analysis/Allocation.h)
   void runOnOperation() override {
-    // TODO: Implement the compute density analysis.
     for (auto func : getOperation().getOps<triton::FuncOp>()) {
       ComputeDensityAnalysisDriver driver(func);
       driver.run();
+      // Apply to function parameters
+      for (unsigned i = 0; i < func.getNumArguments(); i++) {
+        if (auto bandwidth = driver.getBandwidthMetric(i)) {
+          func.setArgAttr(i, "tt.bandwidth", StringAttr::get(func.getContext(), bandwidth.value()));
+        }
+        if (auto compute = driver.getComputeMetric(i)) {
+          func.setArgAttr(i, "tt.compute", StringAttr::get(func.getContext(), compute.value()));
+        }
+      }
     }
   }
 };
 
-} // namespace
 } // namespace
