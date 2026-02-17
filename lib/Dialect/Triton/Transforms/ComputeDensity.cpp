@@ -19,8 +19,58 @@ namespace mlir::triton {
 
 namespace {
 
-std::string makeExpr(const char *op, const SmallVector<std::string> &exprs) {
-  return "(" + triton::join(exprs, op) + ")";
+enum ExprType {
+  Add,
+  Sub,
+  Mul,
+  Div,
+  Rem,
+};
+
+std::string makeExpr(ExprType type, const SmallVector<std::string> &exprs) {
+  std::string op;
+  int cnt = 0;
+  for (auto expr : exprs) {
+    if (expr == "0") {
+      if (type == ExprType::Add) {
+        continue;
+      } else if (type == ExprType::Sub) {
+        if (cnt != 0) {
+          continue;
+        }
+      } else if (type == ExprType::Mul) {
+        return "0";
+      } else if (type == ExprType::Div) {
+        assert(cnt == 0 && "Division by 0");
+        return "1";
+      } else if (type == ExprType::Rem) {
+        assert(cnt == 0 && "Remainder by 0");
+        return "0";
+      }
+    }
+    if (cnt > 0) {
+      if (type == ExprType::Add) {
+        op += " + ";
+      } else if (type == ExprType::Sub) {
+        op += " - ";
+      } else if (type == ExprType::Mul) {
+        op += " * ";
+      } else if (type == ExprType::Div) {
+        op += " / ";
+      } else if (type == ExprType::Rem) {
+        op += " % ";
+      }
+    }
+    op += expr;
+    cnt++;
+  }
+  if (cnt == 0) {
+    return "0";
+  }
+  if (cnt > 1) {
+    return "(" + op + ")";
+  }
+  return op;
 }
 
 // Compute Density Analysis Driver
@@ -134,10 +184,17 @@ class BlockMetrics {
       auto cSize = getNumElements(dotOp.getC().getType());
       auto flops = cSize * K * 2;
       return Metric(Metric::MetricKind::Compute, flops, getElementType(value.getType()));
+    } else if (auto reduceOp = dyn_cast<triton::ReduceOp>(op)) {
+      int64_t flops = 0;
+      for (auto inputTy : reduceOp.getInputTypes()) {
+        flops += getNumElements(inputTy);
+      }
+      return Metric(Metric::MetricKind::Compute, flops, getElementType(value.getType()));
     } else if (auto addPtrOp = dyn_cast<triton::AddPtrOp>(op)) {
       auto type = addPtrOp.getOffset().getType();
       return Metric(Metric::MetricKind::Compute, getNumElements(type), getElementType(type));
-    } else if (isa<triton::SplatOp, triton::BroadcastOp, triton::MakeRangeOp, triton::ExpandDimsOp, triton::GetProgramIdOp>(op)) {
+    } else if (isa<triton::SplatOp, triton::BroadcastOp, triton::MakeRangeOp, triton::ExpandDimsOp, triton::GetProgramIdOp,
+               triton::TransOp, triton::ReshapeOp>(op)) {
       return Metric(Metric::MetricKind::Compute, 0, getElementType(value.getType()));
     } else if (op->hasTrait<OpTrait::Elementwise>()) {
       auto flops = getNumElements(value.getType());
@@ -178,6 +235,23 @@ class BlockMetrics {
   const SmallVector<Operation *> &getLoadOps() const { return loadOps; }
   const SmallVector<Operation *> &getStoreOps() const { return storeOps; }
 
+  Metric calculateChainMetric(Value value, DenseSet<Value> &visited, SmallVector<Value> &edges) const {
+    if (visited.contains(value)) {
+      return Metric();
+    }
+    visited.insert(value);
+    auto mval = getMetric(value);
+    if (!mval || mval->getKind() != Metric::MetricKind::Compute) {
+      edges.push_back(value);
+      return Metric();
+    }
+    Metric totalMetric = *mval;
+    for (auto operand : value.getDefiningOp()->getOperands()) {
+      totalMetric.addSize(calculateChainMetric(operand, visited, edges).getSize());
+    }
+    return totalMetric;
+  }
+
   void dump() const {
     llvm::errs() << "Block: ----------------------------------------------\n";
     llvm::errs() << "Block: " << *block << "\n";
@@ -212,7 +286,7 @@ class ComputeDensityAnalysisDriver {
       auto parentOp = blockArg.getOwner()->getParentOp();
       if (auto funcOp = dyn_cast<triton::FuncOp>(parentOp)) {
         assert(funcOp == func && "Expected function argument");
-        if (isa<triton::PointerType>(blockArg.getType())) {
+        if (isa<triton::PointerType>(blockArg.getType()) || isa<triton::TensorDescType>(blockArg.getType())) {
           return blockArg;
         }
       } else if (auto forOp = dyn_cast<scf::ForOp>(parentOp)) {
@@ -252,25 +326,29 @@ class ComputeDensityAnalysisDriver {
     } else if (auto constant = dyn_cast<arith::ConstantOp>(value.getDefiningOp())) {
       auto value = cast<IntegerAttr>(constant.getValueAttr());
       return std::to_string(value.getInt());
+    } else if (auto programIdOp = dyn_cast<triton::GetProgramIdOp>(value.getDefiningOp())) {
+      return "program_id[" + std::to_string(programIdOp.getAxisAsInt()) + "]";
+    } else if (auto numProgramsOp = dyn_cast<triton::GetNumProgramsOp>(value.getDefiningOp())) {
+      return "num_programs[" + std::to_string(numProgramsOp.getAxisAsInt()) + "]";
     } else {
       SmallVector<std::string> operands;
       for (auto operand : value.getDefiningOp()->getOperands()) {
         operands.push_back(getSymbolicValue(operand));
       }
       if (isa<arith::AddIOp>(value.getDefiningOp())) {
-        return makeExpr(" + ", operands);
+        return makeExpr(ExprType::Add, operands);
       } else if (isa<arith::SubIOp>(value.getDefiningOp())) {
-        return makeExpr(" - ", operands);
+        return makeExpr(ExprType::Sub, operands);
       } else if (isa<arith::MulIOp>(value.getDefiningOp())) {
-        return makeExpr(" * ", operands);
+        return makeExpr(ExprType::Mul, operands);
       } else if (isa<arith::DivSIOp>(value.getDefiningOp())) {
-        return makeExpr(" / ", operands);
+        return makeExpr(ExprType::Div, operands);
       } else if (isa<arith::DivUIOp>(value.getDefiningOp())) {
-        return makeExpr(" / ", operands);
+        return makeExpr(ExprType::Div, operands);
       } else if (isa<arith::RemSIOp>(value.getDefiningOp())) {
-        return makeExpr(" % ", operands);
+        return makeExpr(ExprType::Rem, operands);
       } else if (isa<arith::RemUIOp>(value.getDefiningOp())) {
-        return makeExpr(" % ", operands);
+        return makeExpr(ExprType::Rem, operands);
       }
     }
     //llvm::unreachable("Unsupported operation");
@@ -282,16 +360,16 @@ class ComputeDensityAnalysisDriver {
     auto upperBound = getSymbolicValue(forOp.getUpperBound());
     auto lowerBound = getSymbolicValue(forOp.getLowerBound());
     auto step = getSymbolicValue(forOp.getStep());
-    return makeExpr(" / ", {makeExpr(" - ", {upperBound, lowerBound}), step});
+    return makeExpr(ExprType::Div, {makeExpr(ExprType::Sub, {upperBound, lowerBound}), step});
   }
 
  std::string calculateBandwidth(Operation *op, std::string symbolicSize) {
     auto parentOp = op->getParentOp();
-    if (auto funcOp = dyn_cast<triton::FuncOp>(parentOp)) {
+    if (isa<FunctionOpInterface>(parentOp)) {
       return symbolicSize;
     } else if (auto forOp = dyn_cast<scf::ForOp>(parentOp)) {
       auto numIterations = getSymbolicIterations(forOp);
-      symbolicSize = makeExpr(" * ", {numIterations, symbolicSize});
+      symbolicSize = makeExpr(ExprType::Mul, {numIterations, symbolicSize});
     } else if (auto ifOp = dyn_cast<scf::IfOp>(parentOp)) {
       assert(false && "Not implemented");
       //auto thenSize = calculateBandwidth(ifOp.getThenBlock(), symbolicSize);
@@ -305,48 +383,53 @@ class ComputeDensityAnalysisDriver {
     return calculateBandwidth(parentOp, symbolicSize);
   }
 
-  std::string calculateCompute(Value value, SmallVector<BlockArgument> &blockArgs) {
+  std::string calculateCompute(Value value, DenseSet<Value> &visited, SmallVector<Value> &edges) {
     std::string computeSize;
     if (auto blockArg = dyn_cast<BlockArgument>(value)) {
-      blockArgs.push_back(blockArg);
+      if (isa<scf::ForOp>(blockArg.getOwner()->getParentOp())) {
+        auto forOp = cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
+        auto initArg = forOp.getInitArgs()[blockArg.getArgNumber()];
+        edges.push_back(initArg);
+      } else {
+        assert(isa<FunctionOpInterface>(blockArg.getOwner()->getParentOp()) && "Expected function argument");
+        //edges.push_back(blockArg);
+      }
       return computeSize;
     }
+
     auto defOp = value.getDefiningOp();
     if (auto forOp = dyn_cast<scf::ForOp>(defOp)) {
-      int idx = 0;
-      for (auto result : forOp.getResults()) {
-        if (result == value) {
-          break;
-        }
-        idx++;
-      }
+      int idx = llvm::find(forOp.getResults(), value) - forOp.getResults().begin();
       auto yieldOp = forOp.getBody()->getTerminator();
       auto yieldValue = yieldOp->getOperand(idx);
-      SmallVector<BlockArgument> forBlockArgs;
-      auto yieldMetric = calculateCompute(yieldValue, forBlockArgs);
-      computeSize = "(" + getSymbolicIterations(forOp) + " * " + yieldMetric + ")";
-      for (auto blockArg : forBlockArgs) {
-        auto initArg = forOp.getInitArgs()[blockArg.getArgNumber() - forOp.getNumInductionVars()];
-        auto initArgMetric = calculateCompute(initArg, blockArgs);
-        if (!initArgMetric.empty()) {
-          computeSize = makeExpr(" + ", {computeSize, initArgMetric});
-        }
-      }
+      edges.push_back(yieldValue);
       return computeSize;
+    } else if (auto reduceOp = dyn_cast<triton::ReduceOp>(defOp)) {
+      // Treat like normal compute op
     } else if (defOp->getNumRegions() > 0) {
       assert(false && "Not implemented");
     }
 
     auto &blockMetrics = metrics.at(defOp->getBlock());
-    auto mval = blockMetrics.getMetric(value);
-    if (!mval || mval->getKind() != Metric::MetricKind::Compute) {
-      return computeSize;
+    auto mval = blockMetrics.calculateChainMetric(value, visited, edges);
+    return std::to_string(mval.getSize());
+  }
+
+  std::string calculateCompute(Value value, DenseSet<Value> &visited) {
+    SmallVector<Value> edges;
+    auto computeSize = calculateCompute(value, visited, edges);
+    auto *valueOp = value.getDefiningOp();
+    if (!computeSize.empty() && valueOp != nullptr) {
+      computeSize = calculateBandwidth(valueOp, computeSize);
     }
-    computeSize = std::to_string(mval->getSize());
-    for (auto operand : defOp->getOperands()) {
-      auto operandMetric = calculateCompute(operand, blockArgs);
-      if (!operandMetric.empty()) {
-        computeSize = makeExpr(" + ", {operandMetric, computeSize});
+    for (auto edge : edges) {
+      auto edgeMetric = calculateCompute(edge, visited);
+      if (!edgeMetric.empty()) {
+        if (computeSize.empty()) {
+          computeSize = edgeMetric;
+        } else {
+          computeSize = makeExpr(ExprType::Add, {edgeMetric, computeSize});
+        }
       }
     }
     return computeSize;
@@ -367,7 +450,7 @@ class ComputeDensityAnalysisDriver {
       if (metric.empty()) {
         metric = symbolicSize;
       } else {
-        metric = makeExpr(" + ", {metric, symbolicSize});
+        metric = makeExpr(ExprType::Add, {metric, symbolicSize});
       }
     };
 
@@ -393,13 +476,8 @@ class ComputeDensityAnalysisDriver {
           auto symbolicSize = calculateBandwidth(storeOp, std::to_string(metric->getSize()));
           updateMetric(bandwidthMetrics[param.getArgNumber()], symbolicSize);
           assert(computeMetrics[param.getArgNumber()].empty());
-          SmallVector<BlockArgument> blockArgs;
-          auto computeSize = calculateCompute(storeValue, blockArgs);
-          auto parentOp = storeOp->getParentOp();
-          if (!isa<FunctionOpInterface>(parentOp)) {
-            // TODO: look at blockArgs
-            computeSize = calculateBandwidth(parentOp, computeSize);
-          }
+          DenseSet<Value> visited;
+          auto computeSize = calculateCompute(storeValue, visited);
           if (!computeSize.empty()) {
             updateMetric(computeMetrics[param.getArgNumber()], computeSize);
           }
