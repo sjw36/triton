@@ -330,6 +330,9 @@ class CudaLauncher(object):
         signature = {idx: value for idx, value in src.signature.items()}
         tensordesc_meta = getattr(metadata, "tensordesc_meta", None)
 
+        self.compute_metrics = metadata.compute_metrics
+        self.compute_density = {}
+
         launcher = triton.runtime.driver.active.utils.launch
         expanded_signature = expand_signature(signature.values(), tensordesc_meta)
         self.arg_annotations = annotate_arguments(expanded_signature)
@@ -345,6 +348,21 @@ class CudaLauncher(object):
 
     def __call__(self, gridX, gridY, gridZ, stream, function, kernel_metadata, launch_metadata, launch_enter_hook,
                  launch_exit_hook, *args):
+
+        if not (gridX, gridY, gridZ) in self.compute_density:
+            compdens = 0
+            program_id = [0, 0, 0]
+            for x in range(gridX):
+                program_id[0] = x
+                for y in range(gridY):
+                    program_id[1] = y
+                    for z in range(gridZ):
+                        program_id[2] = z
+                        for metric in self.compute_metrics:
+                            value = eval(metric)
+                            compdens += value
+            self.compute_density[(gridX, gridY, gridZ)] = compdens
+            print(f"compute_density: {gridX:4d}, {gridY:4d}, {gridZ:4d} -- {compdens:.2e}")
 
         def allocate_scratch(size, align, allocator):
             if size > 0:

@@ -245,7 +245,22 @@ class CUDABackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.ttir.add_loop_unroll(pm)
+        passes.ttir.add_calculate_compute_density(pm)
         pm.run(mod, 'make_ttir')
+        func_name = mod.get_entry_func_name()
+        func = mod.get_function(func_name)
+        bandwidth_metrics = []
+        compute_metrics = []
+        for i in range(func.get_num_args()):
+            arg_attrs = func.get_arg_attrs(i)
+            for attr in arg_attrs:
+                if attr.get_name() == "tt.bandwidth":
+                    bandwidth_metrics.append(eval(attr.get_value()))
+                if attr.get_name() == "tt.compute":
+                    compute_metrics.append(eval(attr.get_value()))
+        metadata["bandwidth_metrics"] = bandwidth_metrics
+        metadata["compute_metrics"] = compute_metrics
+
         return mod
 
     @staticmethod
