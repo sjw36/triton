@@ -47,6 +47,10 @@ std::string makeExpr(ExprType type, const SmallVector<std::string> &exprs) {
         assert(cnt == 0 && "Remainder by 0");
         return "0";
       }
+    } else if (expr == "1") {
+      if (type == ExprType::Div && cnt != 0) {
+        continue;
+      }
     }
     if (cnt > 0) {
       if (type == ExprType::Add) {
@@ -196,6 +200,8 @@ class BlockMetrics {
     } else if (isa<triton::SplatOp, triton::BroadcastOp, triton::MakeRangeOp, triton::ExpandDimsOp, triton::GetProgramIdOp,
                triton::TransOp, triton::ReshapeOp>(op)) {
       return Metric(Metric::MetricKind::Compute, 0, getElementType(value.getType()));
+    } else if (isa<arith::SelectOp>(op)) {
+      return Metric(Metric::MetricKind::Compute);
     } else if (op->hasTrait<OpTrait::Elementwise>()) {
       auto flops = getNumElements(value.getType());
       return Metric(Metric::MetricKind::Compute, flops, getElementType(value.getType()));
@@ -313,7 +319,7 @@ class ComputeDensityAnalysisDriver {
     if (auto blockArg = dyn_cast<BlockArgument>(value)) {
       auto parentOp = blockArg.getOwner()->getParentOp();
       if (auto funcOp = dyn_cast<triton::FuncOp>(parentOp)) {
-        return "arg[" + std::to_string(blockArg.getArgNumber()) + "]";
+        return "args[" + std::to_string(blockArg.getArgNumber()) + "]";
       } else if (auto forOp = dyn_cast<scf::ForOp>(parentOp)) {
         assert(false && "Loop iterations derived from loop carried values not implemented");
         auto argNumber = blockArg.getArgNumber() - forOp.getNumInductionVars();
@@ -335,19 +341,20 @@ class ComputeDensityAnalysisDriver {
       for (auto operand : value.getDefiningOp()->getOperands()) {
         operands.push_back(getSymbolicValue(operand));
       }
-      if (isa<arith::AddIOp>(value.getDefiningOp())) {
+      auto *op = value.getDefiningOp();
+      if (isa<arith::AddIOp>(op)) {
         return makeExpr(ExprType::Add, operands);
-      } else if (isa<arith::SubIOp>(value.getDefiningOp())) {
+      } else if (isa<arith::SubIOp>(op)) {
         return makeExpr(ExprType::Sub, operands);
-      } else if (isa<arith::MulIOp>(value.getDefiningOp())) {
+      } else if (isa<arith::MulIOp>(op)) {
         return makeExpr(ExprType::Mul, operands);
-      } else if (isa<arith::DivSIOp>(value.getDefiningOp())) {
+      } else if (isa<arith::DivSIOp>(op)) {
         return makeExpr(ExprType::Div, operands);
-      } else if (isa<arith::DivUIOp>(value.getDefiningOp())) {
+      } else if (isa<arith::DivUIOp>(op)) {
         return makeExpr(ExprType::Div, operands);
-      } else if (isa<arith::RemSIOp>(value.getDefiningOp())) {
+      } else if (isa<arith::RemSIOp>(op)) {
         return makeExpr(ExprType::Rem, operands);
-      } else if (isa<arith::RemUIOp>(value.getDefiningOp())) {
+      } else if (isa<arith::RemUIOp>(op)) {
         return makeExpr(ExprType::Rem, operands);
       }
     }
@@ -386,10 +393,12 @@ class ComputeDensityAnalysisDriver {
   std::string calculateCompute(Value value, DenseSet<Value> &visited, SmallVector<Value> &edges) {
     std::string computeSize;
     if (auto blockArg = dyn_cast<BlockArgument>(value)) {
-      if (isa<scf::ForOp>(blockArg.getOwner()->getParentOp())) {
-        auto forOp = cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
-        auto initArg = forOp.getInitArgs()[blockArg.getArgNumber()];
-        edges.push_back(initArg);
+      if (auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp())) {
+        int idx = blockArg.getArgNumber() - forOp.getNumInductionVars();
+        if (idx >= 0) {
+          auto initArg = forOp.getInitArgs()[blockArg.getArgNumber() - forOp.getNumInductionVars()];
+          edges.push_back(initArg);
+        } // else is loop carried value
       } else {
         assert(isa<FunctionOpInterface>(blockArg.getOwner()->getParentOp()) && "Expected function argument");
         //edges.push_back(blockArg);
