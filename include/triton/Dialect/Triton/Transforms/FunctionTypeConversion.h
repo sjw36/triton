@@ -32,8 +32,8 @@ private:
       Type, llvm::SmallVectorImpl<std::string> &)>;
 
   /**
-   * @brief Wraps a callback of form `std::optional<LogicalResult>(T, llvm::SmallVectorImpl<std::string> &)`
-   * into a RenamerCallbackFn.
+   * @brief Wraps a callback of form `std::optional<LogicalResult>(T,
+   * llvm::SmallVectorImpl<std::string> &)` into a RenamerCallbackFn.
    *
    * @tparam T The type of the argument.
    * @tparam FnT The type of the callback.
