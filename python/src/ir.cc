@@ -431,11 +431,15 @@ void init_triton_ir(py::module &&m) {
              else {
                auto arg = mlir::cast<BlockArgument>(self);
                int id = arg.getArgNumber();
-               std::string attrName = name + "_arg" + std::to_string(id);
                Block *owner = arg.getOwner();
-               if (owner->isEntryBlock() &&
-                   !isa<FuncOp>(owner->getParentOp())) {
-                 owner->getParentOp()->setAttr(attrName, attr);
+               if (owner->isEntryBlock()) {
+                 if (auto func =
+                         dyn_cast<FunctionOpInterface>(owner->getParentOp())) {
+                   func.setArgAttr(id, name, attr);
+                 } else {
+                   std::string attrName = name + "_arg" + std::to_string(id);
+                   owner->getParentOp()->setAttr(attrName, attr);
+                 }
                }
              }
            })
@@ -544,8 +548,24 @@ void init_triton_ir(py::module &&m) {
   py::class_<BoolAttr, Attribute>(m, "bool_attr", py::module_local());
   py::class_<UnitAttr, Attribute>(m, "unit_attr", py::module_local());
 
+  py::class_<NamedAttribute>(m, "named_attribute", py::module_local())
+      .def_property_readonly("name",
+                             [](NamedAttribute &self) -> std::string {
+                               return self.getName().str();
+                             })
+      .def_property_readonly("value", [](NamedAttribute &self) -> std::string {
+        std::string value;
+        llvm::raw_string_ostream os(value);
+        self.getValue().print(os);
+        return os.str();
+      });
+
   // Ops
   py::class_<OpState>(m, "OpState", py::module_local())
+      .def("get_attrs",
+           [](OpState &self) -> std::vector<NamedAttribute> {
+             return self->getAttrs();
+           })
       .def("set_attr",
            [](OpState &self, std::string &name, Attribute &attr) -> void {
              self->setAttr(name, attr);
@@ -788,7 +808,6 @@ void init_triton_ir(py::module &&m) {
         });
 
   py::class_<FuncOp, OpState>(m, "function", py::module_local())
-      // .def_property_readonly("attrs", &ir::function::attrs)
       // .def("add_attr", &ir::function::add_attr);
       .def("args",
            [](FuncOp &self, unsigned idx) -> BlockArgument {
@@ -796,6 +815,14 @@ void init_triton_ir(py::module &&m) {
                throw pybind11::index_error(
                    "Function argument index out of range");
              return self.getArgument(idx);
+           })
+      .def("get_arg_attrs",
+           [](FuncOp &self, unsigned idx) -> std::vector<NamedAttribute> {
+             if (idx >= self.getNumArguments())
+               throw pybind11::index_error(
+                   "Function argument index out of range");
+             FunctionOpInterface funcOpIF(self);
+             return funcOpIF.getArgAttrs(idx);
            })
       .def("get_num_args", &FuncOp::getNumArguments)
       .def(
