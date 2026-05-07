@@ -337,15 +337,14 @@ struct RewriteShapePattern : OpRewritePattern<triton::DescriptorShapeOp> {
 
   LogicalResult matchAndRewrite(triton::DescriptorShapeOp op,
                                 PatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
     auto descTy = op.getDesc().getType();
     auto desc = unpackDescriptor(descTy, op.getDesc());
-    auto dimOp = dyn_cast<arith::ConstantIntOp>(op.getDim().getDefiningOp());
-    if (!dimOp) {
-      // perhaps support dynamic dims later with select
-      return op->emitError("dim must be a constant integer");
+    auto dim = op.getDim();
+    auto rank = static_cast<int64_t>(desc.shape.size());
+    if (dim < 0 || dim >= rank) {
+      return op->emitError() << "dim must be in [0, " << rank
+                             << "), but got " << dim;
     }
-    auto dim = dimOp.value();
     rewriter.replaceOp(op, desc.shape[dim]);
     return mlir::success();
   }
@@ -356,15 +355,14 @@ struct RewriteStridePattern : OpRewritePattern<triton::DescriptorStrideOp> {
 
   LogicalResult matchAndRewrite(triton::DescriptorStrideOp op,
                                 PatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
     auto descTy = op.getDesc().getType();
     auto desc = unpackDescriptor(descTy, op.getDesc());
-    auto dimOp = dyn_cast<arith::ConstantIntOp>(op.getDim().getDefiningOp());
-    if (!dimOp) {
-      // perhaps support dynamic dims later with select
-      return op->emitError("dim must be a constant integer");
+    auto dim = op.getDim();
+    auto rank = static_cast<int64_t>(desc.strides.size());
+    if (dim < 0 || dim >= rank) {
+      return op->emitError() << "dim must be in [0, " << rank
+                             << "), but got " << dim;
     }
-    auto dim = dimOp.value();
     rewriter.replaceOp(op, desc.strides[dim]);
     return mlir::success();
   }

@@ -1247,10 +1247,10 @@ def TT_DescriptorShapeOp : TT_Op<"descriptor_shape", [Pure]> {
     the `shape` arguments passed to `tt.make_tensor_descriptor`.
   }];
 
-  let arguments = (ins TT_TensorDescType:$desc, I32:$dim);
+  let arguments = (ins TT_TensorDescType:$desc, I32Attr:$dim);
   let results = (outs I32:$size);
 
-  let assemblyFormat = "$desc `,` $dim attr-dict `:` qualified(type($desc)) `,` type($dim)";
+  let assemblyFormat = "$desc attr-dict `:` qualified(type($desc))";
 }
 
 def TT_DescriptorStrideOp : TT_Op<"descriptor_stride", [Pure]> {
@@ -1261,10 +1261,10 @@ def TT_DescriptorStrideOp : TT_Op<"descriptor_stride", [Pure]> {
     the `strides` arguments passed to `tt.make_tensor_descriptor`.
   }];
 
-  let arguments = (ins TT_TensorDescType:$desc, I32:$dim);
+  let arguments = (ins TT_TensorDescType:$desc, I32Attr:$dim);
   let results = (outs I64:$stride);
 
-  let assemblyFormat = "$desc `,` $dim attr-dict `:` qualified(type($desc)) `,` type($dim)";
+  let assemblyFormat = "$desc attr-dict `:` qualified(type($desc))";
 }
 
 def TT_DescriptorLoadOp : TT_Op<"descriptor_load", [TT_DescriptorLoadLikeOpInterface]> {
