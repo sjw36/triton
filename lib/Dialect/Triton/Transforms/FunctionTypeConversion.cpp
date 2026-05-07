@@ -15,12 +15,15 @@ LogicalResult
 FuncArgRenamer::apply(Type type, FunctionOpInterface funcOp, int index,
                       TypeConverter::SignatureConversion &conversion) const {
   auto mapping = conversion.getInputMapping(index);
+  OpBuilder builder(funcOp.getContext());
   if (!mapping)
     return success();
 
   for (auto &renamer : llvm::reverse(renamers)) {
-    llvm::SmallVector<std::string, 8> out_suffix;
-    if (std::optional<LogicalResult> result = renamer(type, out_suffix)) {
+    SuffixList out_suffix;
+    ArgAttrsList out_attrs;
+    if (std::optional<LogicalResult> result =
+            renamer(type, out_suffix, out_attrs)) {
       if (failed(*result)) {
         return failure();
       }
@@ -40,6 +43,9 @@ FuncArgRenamer::apply(Type type, FunctionOpInterface funcOp, int index,
             StringAttr::get(funcOp.getContext(), baseName + delimiter + suffix),
             loc);
         funcOp.getArgument(newIndex + i).setLoc(newLoc);
+        funcOp.setArgAttrs(newIndex + i, out_attrs[i]);
+        funcOp.setArgAttr(newIndex + i, "tt.user_index",
+                          builder.getI32IntegerAttr(index));
       }
       return success(); // early return
     }
@@ -75,9 +81,22 @@ struct CallOpConversion : public OpConversionPattern<CallOp> {
                                           oldNumFlattenedResults);
     }
 
+    SmallVector<Value> convertedOperands;
+    for (auto [originalOperand, convertedOperand] :
+         llvm::zip(callOp.getOperands(), adaptor.getOperands())) {
+      if (auto makeTensorDescOp =
+              originalOperand.getDefiningOp<triton::MakeTensorDescOp>()) {
+        llvm::append_values(convertedOperands, makeTensorDescOp.getBase());
+        llvm::append_range(convertedOperands, makeTensorDescOp.getShape());
+        llvm::append_range(convertedOperands, makeTensorDescOp.getStrides());
+        continue;
+      }
+      llvm::append_range(convertedOperands, convertedOperand);
+    }
+
     auto newCallOp =
         CallOp::create(rewriter, callOp->getLoc(), callOp.getCallee(),
-                       convertedResults, flattenValues(adaptor.getOperands()));
+                       convertedResults, convertedOperands);
     // Preserve any additional attributes that may have been set on the op
     newCallOp->setAttrs(callOp->getAttrs());
 

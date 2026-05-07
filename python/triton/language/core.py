@@ -1481,6 +1481,25 @@ class tensor_descriptor_base(base_value):
         y_offset = args[1]
         return _semantic.descriptor_scatter(self, value, x_offsets, y_offset)
 
+    @builtin
+    def rank(self, _semantic=None) -> tensor:
+        """Return descriptor rank."""
+        return _semantic.descriptor_rank(self)
+
+    @builtin
+    def shape(self, dim: Optional[constexpr | tensor] = None, _semantic=None):
+        """Return descriptor shape, or one dimension when `dim` is provided."""
+        if dim is None:
+            return builtins.tuple(self.shape(i, _semantic=_semantic) for i in range(len(self.block_shape)))
+        return _semantic.descriptor_shape(self, dim)
+
+    @builtin
+    def stride(self, dim: Optional[constexpr | tensor] = None, _semantic=None):
+        """Return descriptor stride, or all strides when `dim` is omitted."""
+        if dim is None:
+            return builtins.tuple(self.stride(i, _semantic=_semantic) for i in range(len(self.block_shape)))
+        return _semantic.descriptor_stride(self, dim)
+
 
 class tensor_descriptor_type(tensor_descriptor_base_type):
 
@@ -1492,17 +1511,11 @@ class tensor_descriptor_type(tensor_descriptor_base_type):
     def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[tensor_descriptor_base, int]:
         handle = handles[cursor]
         cursor += 1
-        shape, cursor = self.shape_type._unflatten_ir(handles, cursor)
-        strides, cursor = self.strides_type._unflatten_ir(handles, cursor)
-        shape = shape.values
-        strides = strides.values
-        value = tensor_descriptor(handle, shape, strides, self.block_type)
+        value = tensor_descriptor(handle, self.shape_type, {}, self.block_type)
         return value, cursor
 
     def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
         super()._flatten_ir_types(builder, out)
-        self.shape_type._flatten_ir_types(builder, out)
-        self.strides_type._flatten_ir_types(builder, out)
 
     def __eq__(self, other):
         return super().__eq__(other) and (self.shape_type == other.shape_type) and (self.strides_type
@@ -1513,28 +1526,22 @@ class tensor_descriptor(tensor_descriptor_base):
     """A descriptor representing a tensor in global memory.
     """
 
-    def __init__(self, handle, shape: List[tensor], strides: List[tensor], block_type: block_type):
+    def __init__(self, handle, shape_type: tuple_type, strides_type: tuple_type, block_type: block_type):
         """Not called by user code."""
         # IR handle
         super().__init__(handle, block_type)
         # Global shape
-        self.shape = tuple(shape)
-        self.strides = tuple(strides)
         self.type = tensor_descriptor_type(
             block_type,
-            shape_type=self.shape.type,
-            strides_type=self.strides.type,
+            shape_type=shape_type,
+            strides_type=strides_type,
         )
 
     def _set_name(self, builder: ir.builder, name: str) -> None:
         super()._set_name(builder, name)
-        self.shape._set_name(builder, name + ".shape")
-        self.strides._set_name(builder, name + ".stride")
 
     def _flatten_ir(self, handles: List[ir.value]) -> None:
         super()._flatten_ir(handles)
-        self.shape._flatten_ir(handles)
-        self.strides._flatten_ir(handles)
 
 
 # -----------------------

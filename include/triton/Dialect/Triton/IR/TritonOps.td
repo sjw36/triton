@@ -994,10 +994,11 @@ def TT_MakeTensorDescOp : TT_Op<"make_tensor_descriptor", [
   }];
 
   let arguments = (ins
-    TT_Ptr:$base,
+    AnyTypeOf<[TT_TensorDescType, TT_Ptr]>:$base,
     Variadic<I32>:$shape,
     Variadic<I64>:$strides,
-    DefaultValuedAttr<TT_PaddingOptionAttr, "::mlir::triton::PaddingOption::PAD_ZERO">:$padding
+    DefaultValuedAttr<TT_PaddingOptionAttr, "::mlir::triton::PaddingOption::PAD_ZERO">:$padding,
+    DefaultValuedAttr<BoolAttr, "false">:$roundF32ToTF32
   );
 
   let results = (outs TT_TensorDescType:$result);
@@ -1224,6 +1225,47 @@ def ReturnOp : TT_Op<"return", [Pure, HasParent<"FuncOp">, /*MemRefsNormalizable
   let hasVerifier = 1;
 }
 
+def TT_DescriptorRankOp : TT_Op<"descriptor_rank", [Pure]> {
+  let summary = "query rank of a tensor descriptor";
+  let description = [{
+    Returns the number of dimensions tracked by the tensor descriptor.
+    This metadata is provided either by frontend-added descriptor parameters
+    or by the `tt.make_tensor_descriptor` op arguments.
+  }];
+
+  let arguments = (ins TT_TensorDescType:$desc);
+  let results = (outs I32:$rank);
+
+  let assemblyFormat = "$desc attr-dict `:` qualified(type($desc))";
+}
+
+def TT_DescriptorShapeOp : TT_Op<"descriptor_shape", [Pure]> {
+  let summary = "query shape size for one descriptor dimension";
+  let description = [{
+    Returns the size of the descriptor shape at dimension `dim`.
+    Shape values come from frontend-added descriptor parameters or from
+    the `shape` arguments passed to `tt.make_tensor_descriptor`.
+  }];
+
+  let arguments = (ins TT_TensorDescType:$desc, I32:$dim);
+  let results = (outs I32:$size);
+
+  let assemblyFormat = "$desc `,` $dim attr-dict `:` qualified(type($desc)) `,` type($dim)";
+}
+
+def TT_DescriptorStrideOp : TT_Op<"descriptor_stride", [Pure]> {
+  let summary = "query stride for one descriptor dimension";
+  let description = [{
+    Returns the stride of the descriptor at dimension `dim`.
+    Stride values come from frontend-added descriptor parameters or from
+    the `strides` arguments passed to `tt.make_tensor_descriptor`.
+  }];
+
+  let arguments = (ins TT_TensorDescType:$desc, I32:$dim);
+  let results = (outs I64:$stride);
+
+  let assemblyFormat = "$desc `,` $dim attr-dict `:` qualified(type($desc)) `,` type($dim)";
+}
 
 def TT_DescriptorLoadOp : TT_Op<"descriptor_load", [TT_DescriptorLoadLikeOpInterface]> {
   let summary = "Load from descriptor";

@@ -1549,6 +1549,18 @@ void init_triton_ir(py::module &&m) {
              return self.create<DescriptorLoadOp>(
                  resTy, desc, indices, cacheModifier, evictionPolicy);
            })
+      .def("create_descriptor_rank",
+           [](TritonOpBuilder &self, Value desc) -> Value {
+             return self.create<DescriptorRankOp>(desc);
+           })
+      .def("create_descriptor_shape",
+           [](TritonOpBuilder &self, Value desc, Value dim) -> Value {
+             return self.create<DescriptorShapeOp>(desc, dim);
+           })
+      .def("create_descriptor_stride",
+           [](TritonOpBuilder &self, Value desc, Value dim) -> Value {
+             return self.create<DescriptorStrideOp>(desc, dim);
+           })
       .def("create_descriptor_gather",
            [](TritonOpBuilder &self, Value desc, Value x_indices, Value y_index,
               Type type) -> Value {

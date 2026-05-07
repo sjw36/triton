@@ -1069,6 +1069,23 @@ class TritonSemantic(Generic[TensorTy]):
                                                 self._str_to_eviction_policy(eviction_policy))
         return self.tensor(x, desc.block_type)
 
+    def descriptor_rank(self, desc: tl.tensor_descriptor_base) -> TensorTy:
+        assert isinstance(desc, tl.tensor_descriptor_base)
+        rank = self.builder.create_descriptor_rank(desc.handle)
+        return self.tensor(rank, tl.int32)
+
+    def descriptor_shape(self, desc: tl.tensor_descriptor_base, dim) -> TensorTy:
+        assert isinstance(desc, tl.tensor_descriptor_base)
+        dim = self.make_scalar(dim, tl.int32)
+        shape = self.builder.create_descriptor_shape(desc.handle, dim.handle)
+        return self.tensor(shape, tl.int32)
+
+    def descriptor_stride(self, desc: tl.tensor_descriptor_base, dim) -> TensorTy:
+        assert isinstance(desc, tl.tensor_descriptor_base)
+        dim = self.make_scalar(dim, tl.int32)
+        stride = self.builder.create_descriptor_stride(desc.handle, dim.handle)
+        return self.tensor(stride, tl.int64)
+
     def validate_store_like(self, desc: tl.tensor_descriptor_base, value: TensorTy, offsets) -> None:
         assert isinstance(desc, tl.tensor_descriptor_base)
         ndim = len(desc.block_shape)

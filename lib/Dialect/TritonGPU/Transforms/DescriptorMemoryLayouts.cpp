@@ -11,6 +11,37 @@
 namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
 
+struct TensorDescValue : public mlir::Value {
+  mlir::triton::TensorDescType type;
+
+  using Value::operator==;
+  using Value::operator!=;
+  TensorDescValue() = default;
+  TensorDescValue(mlir::Value value, mlir::triton::TensorDescType type)
+      : mlir::Value(value), type(type) {}
+  TensorDescValue(mlir::TypedValue<mlir::triton::TensorDescType> value)
+      : mlir::Value(value) {
+    if (value)
+      type = value.getType();
+  }
+};
+inline ::llvm::hash_code hash_value(TensorDescValue arg) {
+  return ::llvm::hash_value(arg.getImpl());
+}
+
+namespace llvm {
+template <> struct DenseMapInfo<TensorDescValue> {
+  static TensorDescValue getEmptyKey() { return TensorDescValue(); }
+  static TensorDescValue getTombstoneKey() { return TensorDescValue(); }
+  static unsigned getHashValue(const TensorDescValue &value) {
+    return llvm::hash_value(value.getImpl());
+  }
+  static bool isEqual(const TensorDescValue &lhs, const TensorDescValue &rhs) {
+    return lhs == rhs;
+  }
+};
+} // namespace llvm
+
 namespace mlir::triton::gpu {
 
 namespace {
@@ -135,7 +166,7 @@ static TensorDescType getTensorDescTypeWithEncoding(Operation *op,
 }
 
 struct UseInfo {
-  TypedValue<TensorDescType> descriptor;
+  TensorDescValue descriptor;
   Operation *use;
   Attribute desiredSharedEncoding;
   SmallVector<int64_t> shape;
@@ -301,7 +332,7 @@ AssignDescriptorMemoryLayouts::getUseInfo(Operation *op) {
                                                : resultTy.getEncoding();
     info.cgaLayout = getCGALayout(encoding);
     auto shape = resultTy.getShape();
-    auto rank = info.descriptor.getType().getShape().size();
+    auto rank = info.descriptor.type.getShape().size();
     info.shape = expandToRank(shape, rank);
     return info;
   }
@@ -341,6 +372,16 @@ Attribute AssignDescriptorMemoryLayouts::getFallbackSharedEncoding(
                                      tensorType.getElementType());
 }
 
+SmallVector<TensorDescValue> getTiedTensorDescArgs(Operation *op,
+                                                   int64_t operandNumber) {
+  SmallVector<TensorDescValue> descValues;
+  auto vals = getTiedArgs(op, operandNumber);
+  for (auto val : vals)
+    if (auto desc = dyn_cast<TypedValue<TensorDescType>>(val))
+      descValues.push_back(TensorDescValue(desc));
+  return descValues;
+}
+
 // For each function compute shared memory encodings for all descriptors. The
 // encodings are derived from the uses by applying findEncodingFromUsers on ops.
 // The computed encoding information (EncodingInfo) is then propagated through
@@ -350,28 +391,26 @@ Attribute AssignDescriptorMemoryLayouts::getFallbackSharedEncoding(
 // adapt the encoding to the shape of the descriptor.
 void AssignDescriptorMemoryLayouts::runOnFunction(FuncOp &func) {
   std::unordered_set<EncodingInfo> encodings;
-  llvm::MapVector<TypedValue<TensorDescType>, const EncodingInfo *>
-      valueToEncodingInfo;
-  llvm::PriorityWorklist<TypedValue<triton::TensorDescType>> worklist;
+  llvm::MapVector<TensorDescValue, const EncodingInfo *> valueToEncodingInfo;
+  llvm::PriorityWorklist<TensorDescValue> worklist;
 
-  auto updateEncoding = [&](ArrayRef<Value> descValues, EncodingInfo info) {
+  auto updateEncoding = [&](ArrayRef<TensorDescValue> descValues,
+                            EncodingInfo info) {
     for (auto value : descValues) {
-      auto typedVal = cast<TypedValue<TensorDescType>>(value);
-      auto itr = valueToEncodingInfo.find(typedVal);
+      auto itr = valueToEncodingInfo.find(value);
       if (itr != valueToEncodingInfo.end())
-        info = combineEncodings(*itr->second, info,
-                                typedVal.getType().getShape().size());
+        info =
+            combineEncodings(*itr->second, info, value.type.getShape().size());
     }
 
     auto einfo = internEncoding(encodings, info);
     for (auto value : descValues) {
-      auto typedVal = cast<TypedValue<TensorDescType>>(value);
-      auto res = valueToEncodingInfo.try_emplace(typedVal, einfo);
+      auto res = valueToEncodingInfo.try_emplace(value, einfo);
       if (res.second) {
-        worklist.insert(typedVal);
+        worklist.insert(value);
       } else if (res.first->second != einfo) {
         res.first->second = einfo;
-        worklist.insert(typedVal);
+        worklist.insert(value);
       }
     }
   };
@@ -380,9 +419,17 @@ void AssignDescriptorMemoryLayouts::runOnFunction(FuncOp &func) {
   // which we fallback to default encoding
   auto isKernel = triton::isKernel(func);
   for (auto blockArg : func.getBlocks().front().getArguments())
-    if (auto desc = dyn_cast<TypedValue<TensorDescType>>(blockArg))
-      updateEncoding({desc},
+    if (auto desc = dyn_cast<TypedValue<TensorDescType>>(blockArg)) {
+      TensorDescValue descTD(desc);
+      updateEncoding({descTD},
                      EncodingInfo{{}, {}, {}, /*forcedToDefault=*/!isKernel});
+    } else if (auto attr =
+                   func.getArgAttr(blockArg.getArgNumber(), "tdesc.type")) {
+      TensorDescValue descTD(
+          blockArg, cast<TensorDescType>(cast<TypeAttr>(attr).getValue()));
+      updateEncoding({descTD},
+                     EncodingInfo{{}, {}, {}, /*forcedToDefault=*/!isKernel});
+    }
 
   func.walk([&](Operation *op) {
     if (auto info = getUseInfo(op)) {
@@ -420,10 +467,11 @@ void AssignDescriptorMemoryLayouts::runOnFunction(FuncOp &func) {
       auto op = use.getOwner();
       if (isa<scf::ForOp, scf::WhileOp>(op)) {
         auto offset = 3 * isa<scf::ForOp>(op);
-        auto vals = getTiedArgs(op, use.getOperandNumber() - offset);
+        auto vals = getTiedTensorDescArgs(op, use.getOperandNumber() - offset);
         updateEncoding(vals, EncodingInfo{});
       } else if (isa<scf::YieldOp>(op)) {
-        auto vals = getTiedArgs(op->getParentOp(), use.getOperandNumber());
+        auto vals =
+            getTiedTensorDescArgs(op->getParentOp(), use.getOperandNumber());
         updateEncoding(vals, EncodingInfo{});
       }
     }
@@ -432,14 +480,16 @@ void AssignDescriptorMemoryLayouts::runOnFunction(FuncOp &func) {
     if (auto opResult = dyn_cast<OpResult>(desc)) {
       auto definingOp = opResult.getOwner();
       if (isa<scf::ForOp, scf::WhileOp, scf::IfOp>(definingOp)) {
-        auto vals = getTiedArgs(definingOp, opResult.getResultNumber());
+        auto vals =
+            getTiedTensorDescArgs(definingOp, opResult.getResultNumber());
         updateEncoding(vals, EncodingInfo{});
       }
     } else if (auto blockArg = dyn_cast<BlockArgument>(desc)) {
       auto parentOp = blockArg.getOwner()->getParentOp();
       if (isa<scf::ForOp, scf::WhileOp>(parentOp)) {
         auto offset = isa<scf::ForOp>(parentOp);
-        auto vals = getTiedArgs(parentOp, blockArg.getArgNumber() - offset);
+        auto vals =
+            getTiedTensorDescArgs(parentOp, blockArg.getArgNumber() - offset);
         updateEncoding(vals, EncodingInfo{});
       }
     }
@@ -449,9 +499,10 @@ void AssignDescriptorMemoryLayouts::runOnFunction(FuncOp &func) {
   auto ctx = func.getContext();
   auto numCTAs = triton::gpu::lookupNumCTAs(func);
   for (auto &[desc, einfo] : valueToEncodingInfo) {
-    auto descTy = desc.getType();
+    auto descTy = desc.type;
     auto existingTy =
         RankedTensorType::get(descTy.getShape(), descTy.getElementType());
+
     Attribute newEncoding;
     if (einfo->desiredEncoding) {
       newEncoding = einfo->desiredEncoding;

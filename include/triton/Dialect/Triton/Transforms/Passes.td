@@ -35,6 +35,16 @@ def TritonReorderBroadcast : Pass</*cli-arg*/"triton-reorder-broadcast", /*Op*/"
   let dependentDialects = ["mlir::triton::TritonDialect"];
 }
 
+def TritonDecomposeTensorDescriptorParameters : Pass</*cli-arg*/"triton-decompose-tensor-descriptor-parameters", /*Op*/"mlir::ModuleOp"> {
+  let summary = "Rewrite tensor descriptor function interfaces";
+  let description = [{
+    This pass rewrites function signatures containing `!tt.tensordesc` into
+    flattened fields and materializes `tt.make_tensor_descriptor` when an
+    aggregate descriptor is still needed by remaining descriptor ops.
+  }];
+  let dependentDialects = ["mlir::triton::TritonDialect"];
+}
+
 def TritonRewriteTensorDescriptorToPointer : Pass</*cli-arg*/"triton-rewrite-tensor-descriptor-to-pointer", /*Op*/"mlir::ModuleOp"> {
   let summary = "Rewrite load/stores of tensor descriptors into pointer load/stores";
   let description = [{
@@ -44,6 +54,13 @@ def TritonRewriteTensorDescriptorToPointer : Pass</*cli-arg*/"triton-rewrite-ten
   }];
 
   let dependentDialects = ["mlir::triton::TritonDialect"];
+
+  let options = [
+    Option<"keepTensorDescOps", "keep-tensor-desc-ops",
+           "bool", /*default*/"false",
+           "Disable load/store conversions">
+  ];
+
 }
 
 def TritonLoopUnroll : Pass</*cli-arg*/"triton-loop-unroll", /*Op*/"mlir::ModuleOp"> {

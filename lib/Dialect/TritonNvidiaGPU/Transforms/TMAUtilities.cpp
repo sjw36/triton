@@ -145,7 +145,10 @@ LogicalResult createTMADesc(Value tmaPtr, MakeTensorDescOp op,
                                      builder.getI32IntegerAttr(val));
   };
 
-  auto elemType = op.getBase().getType().getPointeeType();
+  auto baseTy = op.getBase().getType();
+  Type elemType = isa<TensorDescType>(baseTy)
+                      ? cast<TensorDescType>(baseTy).getElementType()
+                      : cast<PointerType>(baseTy).getPointeeType();
   auto elemSize = elemType.getIntOrFloatBitWidth() / 8;
   auto encoding = op.getType().getSharedLayout();
   auto mmaEncoding =

@@ -682,6 +682,31 @@ def test_atomic_scalar_masks():
     tl.atomic_xor(ptrs, 1, mask=True)
 
 
+@filecheck_test
+@triton.jit
+def test_tensor_descriptor_query_ops():
+    # CHECK-LABEL: test_tensor_descriptor_query_ops
+    ptr = tl.full((1, ), 0, tl.int64).to(tl.pointer_type(tl.float32), bitcast=True)
+    desc = tl.make_tensor_descriptor(
+        ptr,
+        shape=[128, 64],
+        strides=[64, 1],
+        block_shape=[32, 16],
+    )
+    # CHECK: {{.*}} = tt.descriptor_rank
+    anchor(desc.rank())
+    # CHECK: {{.*}} = tt.descriptor_rank
+    anchor(len(desc))
+    # CHECK: {{.*}} = tt.descriptor_shape
+    anchor(desc.shape(0))
+    # CHECK: {{.*}} = tt.descriptor_shape
+    anchor(desc.shape()[1])
+    # CHECK: {{.*}} = tt.descriptor_stride
+    anchor(desc.stride(1))
+    # CHECK: {{.*}} = tt.descriptor_stride
+    anchor(desc.stride()[0])
+
+
 @pytest.mark.interpreter
 def test_return_promotion():
 

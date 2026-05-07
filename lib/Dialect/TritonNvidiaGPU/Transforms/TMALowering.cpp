@@ -170,6 +170,11 @@ public:
                                 PatternRewriter &rewriter) const override {
     MLIRContext *ctx = op.getContext();
     auto loc = op.getLoc();
+    auto base = op.getBase();
+    if (isa<TensorDescType>(base.getType())) {
+      rewriter.replaceOp(op, base);
+      return success();
+    }
     auto alloc = triton::gpu::GlobalScratchAllocOp::create(
         rewriter, loc, getPointerType(rewriter.getI8Type()), TMA_SIZE_BYTES,
         TMA_ALIGN, UnitAttr());

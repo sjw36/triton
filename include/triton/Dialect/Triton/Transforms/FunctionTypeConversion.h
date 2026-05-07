@@ -27,13 +27,17 @@ public:
   LogicalResult apply(Type type, FunctionOpInterface funcOp, int index,
                       TypeConverter::SignatureConversion &conversion) const;
 
+  typedef llvm::SmallVector<std::string> SuffixList;
+  typedef llvm::SmallVector<NamedAttribute> ArgAttrs;
+  typedef llvm::SmallVector<ArgAttrs> ArgAttrsList;
+
 private:
   using RenamerCallbackFn = std::function<std::optional<LogicalResult>(
-      Type, llvm::SmallVectorImpl<std::string> &)>;
+      Type, SuffixList &, ArgAttrsList &)>;
 
   /**
    * @brief Wraps a callback of form `std::optional<LogicalResult>(T,
-   * llvm::SmallVectorImpl<std::string> &)` into a RenamerCallbackFn.
+   * SuffixList &, ArgAttrsList &)` into a RenamerCallbackFn.
    *
    * @tparam T The type of the argument.
    * @tparam FnT The type of the callback.
@@ -41,16 +45,15 @@ private:
    * @return A RenamerCallbackFn.
    */
   template <typename T, typename FnT>
-  std::enable_if_t<
-      std::is_invocable_v<FnT, T, llvm::SmallVectorImpl<std::string> &> &&
-          std::is_base_of_v<Type, T>,
-      RenamerCallbackFn>
+  std::enable_if_t<std::is_invocable_v<FnT, T, SuffixList &, ArgAttrsList &> &&
+                       std::is_base_of_v<Type, T>,
+                   RenamerCallbackFn>
   wrapCallback(FnT &&callback) const {
     return [callback = std::forward<FnT>(callback)](
-               Type type, llvm::SmallVectorImpl<std::string> &out_suffix)
-               -> std::optional<LogicalResult> {
+               Type type, SuffixList &out_suffix,
+               ArgAttrsList &out_attrs) -> std::optional<LogicalResult> {
       if (auto t = dyn_cast<T>(type)) {
-        return callback(t, out_suffix);
+        return callback(t, out_suffix, out_attrs);
       }
       return std::nullopt;
     };

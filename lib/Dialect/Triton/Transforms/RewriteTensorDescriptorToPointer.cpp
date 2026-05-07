@@ -12,6 +12,7 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -34,12 +35,6 @@ namespace mlir::triton {
 
 namespace {
 
-bool hasATensorDescriptorType(mlir::TypeRange types) {
-  return llvm::any_of(types, [](mlir::Type t) {
-    return llvm::isa<mlir::triton::TensorDescType>(t);
-  });
-}
-
 using namespace mlir;
 
 /**
@@ -60,23 +55,29 @@ struct Descriptor {
   Value base;
   ValueRange shape;
   ValueRange strides;
-  Value paddingOption;
-  Value roundF32ToTF32;
+  PaddingOption paddingOption;
+  bool roundF32ToTF32;
 };
 
-Descriptor unpackDescriptor(TensorDescType type, ValueRange pack) {
+Descriptor unpackDescriptor(TensorDescType type, Value desc) {
   int rank = type.getShape().size();
-  assert(pack.size() == 1 + 2 * static_cast<size_t>(rank) + 2 &&
-         "Expected tensor descriptors to consist of a pointer, "
-         "followed by 'rank' shape values and 'rank' stride values, "
-         "followed by padding and TF32 rounding option values.");
-
+  // Find the make_tensor_descriptor op that created this descriptor
+  auto makeTensorDescOp = desc.getDefiningOp<triton::MakeTensorDescOp>();
+  if (!makeTensorDescOp) {
+    // desc.emitError("desc must be created by a make_tensor_descriptor op");
+    return Descriptor();
+  }
+  auto base = makeTensorDescOp.getBase();
+  auto shape = makeTensorDescOp.getShape();
+  auto strides = makeTensorDescOp.getStrides();
+  auto paddingOption = makeTensorDescOp.getPadding();
+  auto roundF32ToTF32 = makeTensorDescOp.getRoundF32ToTF32();
   Descriptor res;
-  res.base = pack[0];
-  res.shape = pack.slice(1, rank);
-  res.strides = pack.slice(1 + rank, rank);
-  res.paddingOption = pack[1 + 2 * rank];
-  res.roundF32ToTF32 = pack[2 + 2 * rank];
+  res.base = base;
+  res.shape = shape;
+  res.strides = strides;
+  res.paddingOption = paddingOption;
+  res.roundF32ToTF32 = roundF32ToTF32;
   return res;
 }
 
@@ -179,9 +180,11 @@ Value generateMaskFromOffsetRanges(OpBuilder &builder, const Location &loc,
         arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sge,
                               offsetWithRange, splatLowerBound);
 
-    // Compare with upper bound
+    // Compare with upper bound (descriptor shape is i32; offsets are i64)
+    Value upperBound = arith::ExtSIOp::create(
+        builder, loc, builder.getI64Type(), desc.shape[i]);
     Value splatUpperBound = triton::SplatOp::create(
-        builder, loc, offsetWithRange.getType(), desc.shape[i]);
+        builder, loc, offsetWithRange.getType(), upperBound);
     Value cmpUpper =
         arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::slt,
                               offsetWithRange, splatUpperBound);
@@ -220,9 +223,9 @@ Value generateMask(OpBuilder &builder, const Location &loc,
 
 Value generateOther(OpBuilder &builder, Location loc, Type scalarTy,
                     ArrayRef<int64_t> blockShape,
-                    Value paddingOption = nullptr) {
+                    triton::PaddingOption paddingOption) {
   auto blockTy = RankedTensorType::get(blockShape, scalarTy);
-  if (paddingOption && mlir::isa<FloatType>(scalarTy)) {
+  if (mlir::isa<FloatType>(scalarTy)) {
     auto floatTy = mlir::cast<FloatType>(scalarTy);
     auto nan = llvm::APFloat::getNaN(floatTy.getFloatSemantics());
     auto nanValue = arith::ConstantOp::create(
@@ -231,8 +234,11 @@ Value generateOther(OpBuilder &builder, Location loc, Type scalarTy,
     auto zeroValue = arith::ConstantOp::create(
         builder, loc,
         SplatElementsAttr::get(blockTy, builder.getZeroAttr(floatTy)));
-    return mlir::arith::SelectOp::create(builder, loc, paddingOption, nanValue,
-                                         zeroValue);
+    if (paddingOption == triton::PaddingOption::PAD_NAN) {
+      return nanValue;
+    } else {
+      return zeroValue;
+    }
   } else {
     auto attr = builder.getZeroAttr(blockTy);
     return arith::ConstantOp::create(builder, loc, attr);
@@ -240,7 +246,7 @@ Value generateOther(OpBuilder &builder, Location loc, Type scalarTy,
 }
 
 Value generateOther(OpBuilder &builder, Location loc, TensorDescType descTy,
-                    Value paddingOption = nullptr) {
+                    PaddingOption paddingOption) {
   auto blockTy = descTy.getSignlessBlockType();
   return generateOther(builder, loc, blockTy.getElementType(),
                        blockTy.getShape(), paddingOption);
@@ -296,41 +302,83 @@ SmallVector<mlir::Value> castToI64(OpBuilder &builder,
   });
 }
 
-struct RewriteMakeTensorDesc : OpConversionPattern<triton::MakeTensorDescOp> {
-  using OpConversionPattern<triton::MakeTensorDescOp>::OpConversionPattern;
+struct RewriteMakeTensorDesc : OpRewritePattern<triton::MakeTensorDescOp> {
+  using OpRewritePattern::OpRewritePattern;
 
-  llvm::LogicalResult
-  matchAndRewrite(triton::MakeTensorDescOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(triton::MakeTensorDescOp op,
+                                PatternRewriter &rewriter) const override {
     SmallVector<mlir::Value> ptrShapeStridesPaddingOption;
-    llvm::append_values(ptrShapeStridesPaddingOption, adaptor.getBase());
+    llvm::append_values(ptrShapeStridesPaddingOption, op.getBase());
     llvm::append_range(ptrShapeStridesPaddingOption,
-                       castToI64(rewriter, adaptor.getShape()));
-    llvm::append_range(ptrShapeStridesPaddingOption, adaptor.getStrides());
-    auto paddingOption = mlir::arith::ConstantOp::create(
-        rewriter, op.getLoc(), rewriter.getI1Type(),
-        rewriter.getBoolAttr(adaptor.getPadding() ==
-                             triton::PaddingOption::PAD_NAN));
-    llvm::append_values(ptrShapeStridesPaddingOption, paddingOption);
-    auto roundF32ToTF32 = mlir::arith::ConstantOp::create(
-        rewriter, op.getLoc(), rewriter.getI1Type(),
-        rewriter.getBoolAttr(false));
-    llvm::append_values(ptrShapeStridesPaddingOption, roundF32ToTF32);
-    rewriter.replaceOpWithMultiple(op, {ptrShapeStridesPaddingOption});
+                       castToI64(rewriter, op.getShape()));
+    llvm::append_range(ptrShapeStridesPaddingOption, op.getStrides());
+    rewriter.replaceOp(op, ptrShapeStridesPaddingOption);
     return mlir::success();
   }
 };
 
-struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
-  using OpConversionPattern<triton::DescriptorLoadOp>::OpConversionPattern;
+struct RewriteRankPattern : OpRewritePattern<triton::DescriptorRankOp> {
+  using OpRewritePattern::OpRewritePattern;
 
-  llvm::LogicalResult
-  matchAndRewrite(triton::DescriptorLoadOp op, OneToNOpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(triton::DescriptorRankOp op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto descTy = op.getDesc().getType();
+    auto desc = unpackDescriptor(descTy, op.getDesc());
+    auto rank = desc.shape.size();
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+        op, rewriter.getI32Type(), rewriter.getI32IntegerAttr(rank));
+    return success();
+  }
+};
+
+struct RewriteShapePattern : OpRewritePattern<triton::DescriptorShapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::DescriptorShapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto descTy = op.getDesc().getType();
+    auto desc = unpackDescriptor(descTy, op.getDesc());
+    auto dimOp = dyn_cast<arith::ConstantIntOp>(op.getDim().getDefiningOp());
+    if (!dimOp) {
+      // perhaps support dynamic dims later with select
+      return op->emitError("dim must be a constant integer");
+    }
+    auto dim = dimOp.value();
+    rewriter.replaceOp(op, desc.shape[dim]);
+    return mlir::success();
+  }
+};
+
+struct RewriteStridePattern : OpRewritePattern<triton::DescriptorStrideOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::DescriptorStrideOp op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto descTy = op.getDesc().getType();
+    auto desc = unpackDescriptor(descTy, op.getDesc());
+    auto dimOp = dyn_cast<arith::ConstantIntOp>(op.getDim().getDefiningOp());
+    if (!dimOp) {
+      // perhaps support dynamic dims later with select
+      return op->emitError("dim must be a constant integer");
+    }
+    auto dim = dimOp.value();
+    rewriter.replaceOp(op, desc.strides[dim]);
+    return mlir::success();
+  }
+};
+
+struct RewriteLoadPattern : OpRewritePattern<triton::DescriptorLoadOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::DescriptorLoadOp op,
+                                PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     const auto blockShape = op.getDesc().getType().getShape();
     auto descTy = op.getDesc().getType();
-    auto desc = unpackDescriptor(descTy, adaptor.getDesc());
+    auto desc = unpackDescriptor(descTy, op.getDesc());
     auto offsets = castToI64(rewriter, op.getIndices());
     auto other = generateOther(rewriter, loc, descTy, desc.paddingOption);
     auto newLoad = triton::LoadOp::create(
@@ -340,18 +388,8 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
 
     Value result = newLoad.getResult();
-    if (descTy.getElementType().isF32()) {
-
-      auto ifOp = scf::IfOp::create(rewriter, loc, result.getType(),
-                                    desc.roundF32ToTF32, /*withElse=*/true);
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(ifOp.thenBlock());
-      auto rounded = roundF32ToTF32(rewriter, loc, result);
-      scf::YieldOp::create(rewriter, loc, rounded);
-
-      rewriter.setInsertionPointToStart(ifOp.elseBlock());
-      scf::YieldOp::create(rewriter, loc, result);
-      result = ifOp.getResult(0);
+    if (descTy.getElementType().isF32() && desc.roundF32ToTF32) {
+      result = roundF32ToTF32(rewriter, loc, result);
     }
 
     rewriter.replaceOp(op, result);
@@ -359,16 +397,15 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
   }
 };
 
-struct RewriteStorePattern : OpConversionPattern<triton::DescriptorStoreOp> {
-  using OpConversionPattern<triton::DescriptorStoreOp>::OpConversionPattern;
+struct RewriteStorePattern : OpRewritePattern<triton::DescriptorStoreOp> {
+  using OpRewritePattern::OpRewritePattern;
 
-  llvm::LogicalResult
-  matchAndRewrite(triton::DescriptorStoreOp op, OneToNOpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(triton::DescriptorStoreOp op,
+                                PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto descTy = op.getDesc().getType();
     const auto blockShape = descTy.getShape();
-    auto desc = unpackDescriptor(descTy, adaptor.getDesc());
+    auto desc = unpackDescriptor(descTy, op.getDesc());
     auto offsets = castToI64(rewriter, op.getIndices());
 
     auto newStore = rewriter.replaceOpWithNewOp<triton::StoreOp>(
@@ -402,16 +439,15 @@ generateGatherScatterPtrMask(OpBuilder &builder, Location loc,
   return {ptr, mask};
 }
 
-struct RewriteGatherPattern : OpConversionPattern<triton::DescriptorGatherOp> {
-  using OpConversionPattern<triton::DescriptorGatherOp>::OpConversionPattern;
+struct RewriteGatherPattern : OpRewritePattern<triton::DescriptorGatherOp> {
+  using OpRewritePattern::OpRewritePattern;
 
-  llvm::LogicalResult
-  matchAndRewrite(triton::DescriptorGatherOp op, OneToNOpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(triton::DescriptorGatherOp op,
+                                PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto descTy = op.getDesc().getType();
     const auto blockShape = op.getResult().getType().getShape();
-    auto desc = unpackDescriptor(descTy, adaptor.getDesc());
+    auto desc = unpackDescriptor(descTy, op.getDesc());
     auto [ptr, mask] = generateGatherScatterPtrMask(
         rewriter, loc, blockShape, desc, op.getXOffsets(), op.getYOffset());
     auto other = generateOther(rewriter, loc,
@@ -423,10 +459,9 @@ struct RewriteGatherPattern : OpConversionPattern<triton::DescriptorGatherOp> {
     newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
 
     Value result = newLoad.getResult();
-    if (descTy.getSignlessBlockType().getElementType().isF32()) {
-      auto rounded = roundF32ToTF32(rewriter, loc, result);
-      result = arith::SelectOp::create(rewriter, loc, desc.roundF32ToTF32,
-                                       rounded, result);
+    if (descTy.getSignlessBlockType().getElementType().isF32() &&
+        desc.roundF32ToTF32) {
+      result = roundF32ToTF32(rewriter, loc, result);
     }
 
     rewriter.replaceOp(op, result);
@@ -434,17 +469,15 @@ struct RewriteGatherPattern : OpConversionPattern<triton::DescriptorGatherOp> {
   }
 };
 
-struct RewriteScatterPattern
-    : OpConversionPattern<triton::DescriptorScatterOp> {
-  using OpConversionPattern<triton::DescriptorScatterOp>::OpConversionPattern;
+struct RewriteScatterPattern : OpRewritePattern<triton::DescriptorScatterOp> {
+  using OpRewritePattern::OpRewritePattern;
 
-  llvm::LogicalResult
-  matchAndRewrite(triton::DescriptorScatterOp op, OneToNOpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(triton::DescriptorScatterOp op,
+                                PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto descTy = op.getDesc().getType();
     const auto blockShape = op.getSrc().getType().getShape();
-    auto desc = unpackDescriptor(descTy, adaptor.getDesc());
+    auto desc = unpackDescriptor(descTy, op.getDesc());
     auto [ptr, mask] = generateGatherScatterPtrMask(
         rewriter, loc, blockShape, desc, op.getXOffsets(), op.getYOffset());
     auto newStore = rewriter.replaceOpWithNewOp<triton::StoreOp>(
@@ -488,16 +521,15 @@ std::optional<RMWOp> translateReduceKind(DescriptorReduceKind kind,
   return {};
 }
 
-struct RewriteReducePattern : OpConversionPattern<triton::DescriptorReduceOp> {
-  using OpConversionPattern<triton::DescriptorReduceOp>::OpConversionPattern;
+struct RewriteReducePattern : OpRewritePattern<triton::DescriptorReduceOp> {
+  using OpRewritePattern::OpRewritePattern;
 
-  llvm::LogicalResult
-  matchAndRewrite(triton::DescriptorReduceOp op, OneToNOpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(triton::DescriptorReduceOp op,
+                                PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto descTy = op.getDesc().getType();
     const auto blockShape = descTy.getShape();
-    auto desc = unpackDescriptor(descTy, adaptor.getDesc());
+    auto desc = unpackDescriptor(descTy, op.getDesc());
     auto offsets = castToI64(rewriter, op.getIndices());
     auto rmwOp = translateReduceKind(op.getKind(), descTy);
     if (!rmwOp) {
@@ -519,102 +551,49 @@ struct RewriteReducePattern : OpConversionPattern<triton::DescriptorReduceOp> {
 };
 
 /**
- * @brief This implements the pass for converting triton tensor descriptor
- * loads/stores into indexed loads/stores.
+ * @brief Lower tensor-descriptor IR to pointer-based `tt.load` / `tt.store` /
+ * atomics using greedy pattern rewriting (`applyPatternsGreedily`).
  *
- * The key idea is that each tensor descriptor can be broken down into multiple
- * values. Suppose we have a tensor pointer with rank r, we can cast that tensor
- * descriptor value to and from 1+2r values: a tensor pointer value and two i32
- * value for each dimension representing the dynamic shape and strides.
+ * @details The pass does not run `DialectConversion`, does not use a
+ * `TypeConverter`, and does not rewrite `tt.func` signatures or call/return
+ * edges—those are handled by `triton-decompose-tensor-descriptor-parameters`.
  *
- * As in normal conversion patterns, individual operations can be converted
- * using casted tensor descriptors and offsets and casting the results back to
- * tensor pointers.
+ * Patterns peel descriptor SSA values back to the defining
+ * `tt.make_tensor_descriptor` (see `unpackDescriptor`) to recover base pointer,
+ * per-dimension shapes, and strides, then replace descriptor consumers with
+ * ordinary pointer arithmetic, masks, and `tt.load` / `tt.store` /
+ * `tt.atomic_rmw` as appropriate (gather, scatter, reduce). Auxiliary ops
+ * (`tt.descriptor_rank`, shape/stride queries) fold to constants or the
+ * underlying SSA producers. `tt.make_tensor_descriptor` itself can be replaced
+ * by a flat tuple of values (pointer, promoted shapes, strides, padding and
+ * TF32-rounding flags) when full lowering is enabled.
  *
- * We have special handling for TMA loads/stores and the make tensor descriptor
- * op.
- *
- * @note Why use the conversion pattern rewriter? In most cases the defining
- * operation of a tensor descriptor will be a make tensor descriptor op.
- * However, this isn't always true - for example, if the tensor descriptor is a
- * function argument or is in a conditional statement, we need better tracking
- * of the pointer, shape, and strides.
+ * When `keepTensorDescOps` is set, descriptor-producing and descriptor-memory
+ * patterns are skipped so descriptor ops remain in the IR for later passes.
  */
 class TritonRewriteTensorDescriptorToPointerPass
     : public impl::TritonRewriteTensorDescriptorToPointerBase<
           TritonRewriteTensorDescriptorToPointerPass> {
+public:
+  using impl::TritonRewriteTensorDescriptorToPointerBase<
+      TritonRewriteTensorDescriptorToPointerPass>::
+      TritonRewriteTensorDescriptorToPointerBase;
+
   void runOnOperation() override {
     auto op = getOperation();
 
-    mlir::ConversionTarget target(getContext());
-    target.addDynamicallyLegalDialect<mlir::arith::ArithDialect,
-                                      mlir::scf::SCFDialect,
-                                      mlir::triton::TritonDialect>(
-        [](mlir::Operation *op) {
-          return !hasATensorDescriptorType(op->getOperandTypes()) &&
-                 !hasATensorDescriptorType(op->getResultTypes());
-        });
-    target.addDynamicallyLegalOp<triton::FuncOp>([](triton::FuncOp funcOp) {
-      return !hasATensorDescriptorType(funcOp.getFunctionType().getInputs()) &&
-             !hasATensorDescriptorType(funcOp.getFunctionType().getResults());
-    });
-
-    mlir::TypeConverter converter;
-
-    converter.addConversion([](mlir::Type t) {
-      // Most types don't require any conversion
-      return t;
-    });
-    converter.addConversion([](mlir::triton::TensorDescType t,
-                               llvm::SmallVectorImpl<mlir::Type> &out) {
-      // We convert a tensor descriptor into an pointer, and a shape and stride
-      // for each dimension, and padding option. i.e., we create 1+2*rank+1
-      // values. Note that tensor descriptors may be signed/unsigned integers
-      // whereas pointers should always be signless.
-      auto tensorType = t.getSignlessBlockType();
-      out.push_back(triton::getPointerType(tensorType.getElementType()));
-      out.insert(out.end(), 2 * tensorType.getRank(),
-                 mlir::IntegerType::get(t.getContext(), 64));
-      out.push_back(mlir::IntegerType::get(t.getContext(), 1));
-      out.push_back(mlir::IntegerType::get(t.getContext(), 1));
-      return mlir::success();
-    });
-
-    FuncArgRenamer renamer(".");
-    renamer.addRenamer([](mlir::triton::TensorDescType type,
-                          llvm::SmallVectorImpl<std::string> &out_suffix) {
-      auto tensorType = type.getSignlessBlockType();
-      int dims = tensorType.getRank();
-      out_suffix.push_back("");
-      for (int i = 0; i < dims; i++) {
-        out_suffix.push_back("shape." + std::to_string(i));
-      }
-      for (int i = 0; i < dims; i++) {
-        out_suffix.push_back("stride." + std::to_string(i));
-      }
-      out_suffix.push_back("padding");
-      out_suffix.push_back("roundF32ToTF32");
-      return success();
-    });
-
     mlir::RewritePatternSet patterns(op->getContext());
 
-    // Populate conversion patterns to handle loops, function calls, and arith
-    // ops.
-    triton::populateFunctionTypeConversions(converter, renamer, patterns);
-    mlir::scf::populateSCFStructuralTypeConversions(converter, patterns);
-    triton::populateArithTypeConversions(converter, patterns);
+    patterns.add<RewriteRankPattern, RewriteShapePattern, RewriteStridePattern>(
+        &getContext());
 
-    patterns
-        .add<RewriteMakeTensorDesc, RewriteLoadPattern, RewriteStorePattern,
-             RewriteGatherPattern, RewriteScatterPattern, RewriteReducePattern>(
-            converter, &getContext());
+    if (!keepTensorDescOps) {
+      patterns.add<RewriteMakeTensorDesc, RewriteLoadPattern,
+                   RewriteStorePattern, RewriteGatherPattern,
+                   RewriteScatterPattern, RewriteReducePattern>(&getContext());
+    }
 
-    ConversionConfig config;
-    config.buildMaterializations = false;
-
-    if (mlir::failed(mlir::applyPartialConversion(
-            op, target, std::move(patterns), config))) {
+    if (failed(applyPatternsGreedily(op, std::move(patterns)))) {
       signalPassFailure();
     }
   }

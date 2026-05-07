@@ -1608,6 +1608,17 @@ class CodeGenerator(ast.NodeVisitor):
             raise CompileTimeAssertionFailure(self.jit_fn.src, node, _unwrap_if_constexpr(message))
         return None
 
+    def execute_len(self, node: ast.Call):
+        if len(node.args) != 1 or len(node.keywords):
+            raise TypeError("len() takes exactly one argument")
+        arg = self.visit(node.args[0])
+        # Descriptor rank can be dynamic; lower to tt.descriptor_rank instead of
+        # forcing compile-time evaluation.
+        if isinstance(arg, language.core.tensor_descriptor_base):
+            return self.semantic.descriptor_rank(arg)
+        arg = _unwrap_if_constexpr(arg)
+        return constexpr(len(arg))
+
     def static_executor(python_fn):
 
         def ret(self, node: ast.Call):
@@ -1627,7 +1638,7 @@ class CodeGenerator(ast.NodeVisitor):
         ttgl.static_assert: execute_static_assert,
         ttgl.static_print: static_executor(print),
         int: static_executor(int),
-        len: static_executor(len),
+        len: execute_len,
     }
 
 
