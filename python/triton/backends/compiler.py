@@ -33,6 +33,10 @@ class BaseBackend(metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
+    def get_driver(self):
+        raise NotImplementedError
+
+    @abstractmethod
     def hash(self) -> str:
         """Returns a unique identifier for this backend"""
         raise NotImplementedError

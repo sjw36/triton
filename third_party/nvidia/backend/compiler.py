@@ -14,6 +14,7 @@ import signal
 import os
 import subprocess
 from pathlib import Path
+from triton.backends.nvidia.driver import CudaDriver
 
 
 def min_dot_size(target: GPUTarget):
@@ -153,6 +154,9 @@ class CUDABackend(BaseBackend):
     @staticmethod
     def supports_target(target: GPUTarget):
         return target.backend == 'cuda'
+
+    def get_driver(self):
+        return CudaDriver()
 
     def _parse_arch(self, arch):
         pattern = r"^sm(\d+)$"

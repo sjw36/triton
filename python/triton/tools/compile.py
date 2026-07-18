@@ -81,6 +81,13 @@ def compile_kernel(args: CompileArgs):
     out_name = args.out_name if args.out_name else args.kernel_name
     out_path = args.out_path if args.out_path else Path(out_name)
 
+    # setup target and make it the only valid backend
+    target = triton.backends.compiler.GPUTarget(*args.target.split(":")) \
+        if args.target else triton.runtime.driver.active.get_current_target()
+    backend = triton.compiler.make_backend(target)
+    driver = backend.get_driver()
+    triton.runtime.driver.set_active(driver)
+
     # execute python sources and extract functions wrapped in JITFunction
     arg_path = Path(args.path)
     sys.path.insert(0, str(arg_path.parent))
@@ -92,7 +99,24 @@ def compile_kernel(args: CompileArgs):
     assert len(grid) == 3
 
     # validate and parse signature
-    signature = list(map(lambda s: s.strip(" "), args.signature.split(",")))
+    #
+    # Split on top-level commas only: types such as tensordesc<fp16[128,64]>
+    # carry their own commas inside <...>/[...], so a bare str.split(",") would
+    # shred a single argument into several entries.
+    def split_signature(sig: str):
+        entries, depth, start = [], 0, 0
+        for i, ch in enumerate(sig):
+            if ch in "<[":
+                depth += 1
+            elif ch in ">]":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                entries.append(sig[start:i])
+                start = i + 1
+        entries.append(sig[start:])
+        return [s.strip(" ") for s in entries]
+
+    signature = split_signature(args.signature)
 
     def hash_signature(signature: List[str]):
         m = hashlib.sha256()
@@ -134,16 +158,13 @@ def compile_kernel(args: CompileArgs):
     attrs = {k: [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}
     kernel.create_binder()
     src = kernel.ASTSource(fn=kernel, constexprs=constants, signature=signature, attrs=attrs)
-    target = triton.backends.compiler.GPUTarget(*args.target.split(":")) \
-        if args.target else triton.runtime.driver.active.get_current_target()
-    backend = triton.compiler.make_backend(target)
     kwargs = {"num_warps": args.num_warps, "num_stages": args.num_stages}
     options = backend.parse_options(kwargs)
     ccinfo = triton.compile(src, target=target, options=options.__dict__)
 
     if getattr(ccinfo.metadata, "global_scratch_size", 0) > 0:
         raise RuntimeError("AOT compiling kernels with global scratch requirements is not yet implemented")
-    if ccinfo.metadata.profile_scratch_size > 0:
+    if getattr(ccinfo.metadata, "profile_scratch_size", 0) > 0:
         raise RuntimeError("AOT compiling kernels with profile scratch requirements is not yet implemented")
 
     arg_names = []

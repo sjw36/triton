@@ -10,6 +10,7 @@ import re
 import functools
 import warnings
 from pathlib import Path
+from triton.backends.amd.driver import HIPDriver
 
 
 def get_min_dot_size(target: GPUTarget):
@@ -106,6 +107,9 @@ class HIPBackend(BaseBackend):
     @staticmethod
     def supports_target(target: GPUTarget):
         return target.backend == 'hip'
+
+    def get_driver(self):
+        return HIPDriver()
 
     def __init__(self, target: GPUTarget) -> None:
         super().__init__(target)
